@@ -7,7 +7,7 @@ Internal UX audit agent — paste a URL, crawl and screenshot every page at 3 vi
 - **Framework:** Next.js 14 (App Router, TypeScript)
 - **Styling:** Tailwind CSS + shadcn/ui
 - **Crawling:** Playwright (headless browser screenshotting)
-- **Analysis:** Claude Vision via @anthropic-ai/sdk
+- **Analysis:** Claude CLI (`claude --print`) for vision-based UX/WCAG analysis — zero API cost
 - **Ticketing:** Asana API integration
 
 ## Project Structure
