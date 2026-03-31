@@ -1,14 +1,11 @@
 import { NextRequest } from "next/server";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { crawlAndScreenshot } from "@/lib/crawler";
+import { crawlAndScreenshot, type Cookie } from "@/lib/crawler";
 import { validateAnalysisResult, type UXIssue } from "@/lib/analyzer";
 import { type ViewportName, VIEWPORTS } from "@/lib/crawler";
-
-const execFileAsync = promisify(execFile);
+import { runClaudePrint } from "@/lib/claude";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -17,6 +14,7 @@ const execFileAsync = promisify(execFile);
 interface AuditRequestBody {
   url: string;
   prdContext?: string;
+  cookies?: Cookie[];
 }
 
 interface ViewportAnalysis {
@@ -44,6 +42,7 @@ type SSEWriter = {
   sendProgress: (detail: string, current?: number, total?: number) => void;
   sendResult: (data: AuditResult) => void;
   sendError: (message: string) => void;
+  sendAuthRequired: (authUrl: string, screenshot: string) => void;
   close: () => void;
 };
 
@@ -64,6 +63,9 @@ function createSSEWriter(controller: ReadableStreamDefaultController<Uint8Array>
     },
     sendError(message: string) {
       send("error", { message });
+    },
+    sendAuthRequired(authUrl: string, screenshot: string) {
+      send("auth_required", { authUrl, screenshot });
     },
     close() {
       controller.close();
@@ -120,7 +122,7 @@ export async function POST(request: NextRequest) {
       const sse = createSSEWriter(controller);
 
       try {
-        await runAudit(body.url, sse, body.prdContext);
+        await runAudit(body.url, sse, body.prdContext, body.cookies);
       } catch (err) {
         sse.sendError((err as Error).message);
       } finally {
@@ -144,12 +146,20 @@ export async function POST(request: NextRequest) {
 
 const VIEWPORT_NAMES: ViewportName[] = Object.keys(VIEWPORTS) as ViewportName[];
 
-async function runAudit(url: string, sse: SSEWriter, prdContext?: string): Promise<void> {
+async function runAudit(url: string, sse: SSEWriter, prdContext?: string, cookies?: Cookie[]): Promise<void> {
   // --- Step 1: Crawl and screenshot ----------------------------------------
   sse.sendProgress("Crawling site and discovering pages...");
 
   const outputDir = path.join(os.tmpdir(), `ux-audit-${Date.now()}`);
-  const manifest = await crawlAndScreenshot(url, outputDir);
+  const outcome = await crawlAndScreenshot(url, outputDir, cookies);
+
+  // If auth is required, send the event and stop
+  if (outcome.needsAuth) {
+    sse.sendAuthRequired(outcome.authUrl, outcome.screenshot);
+    return;
+  }
+
+  const manifest = outcome.manifest;
   const totalRoutes = manifest.routes.length;
 
   if (totalRoutes === 0) {
@@ -160,23 +170,41 @@ async function runAudit(url: string, sse: SSEWriter, prdContext?: string): Promi
 
   sse.sendProgress(`Discovered ${totalRoutes} page(s). Analyzing screenshots with Claude...`);
 
-  // --- Step 2: Write PRD context to file if provided -----------------------
-  const analyzeArgs = [path.join(process.cwd(), "analyze.sh"), outputDir];
-
-  if (prdContext) {
-    const prdFile = path.join(outputDir, "prd-context.txt");
-    fs.writeFileSync(prdFile, prdContext);
-    analyzeArgs.push(prdFile);
+  // --- Step 2: Build prompt and run Claude analysis -------------------------
+  const promptFile = path.join(process.cwd(), "src", "lib", "analyzer", "ux-analysis-prompt.txt");
+  if (!fs.existsSync(promptFile)) {
+    throw new Error(`Prompt file not found at ${promptFile}`);
   }
 
-  // --- Step 3: Run analyze.sh ----------------------------------------------
-  try {
-    await execFileAsync("bash", analyzeArgs, {
-      cwd: process.cwd(),
-      timeout: 240_000, // 4 minute timeout for Claude analysis
-    });
-  } catch (err) {
-    throw new Error(`Screenshot analysis failed: ${(err as Error).message}`);
+  // Collect PNG files
+  const pngs = fs.readdirSync(outputDir).filter((f) => f.endsWith(".png")).map((f) => path.join(outputDir, f));
+
+  if (pngs.length === 0) {
+    const resultsPath = path.join(outputDir, "analysis-results.json");
+    fs.writeFileSync(resultsPath, '{"screenshots":{}}');
+  } else {
+    // Build the prompt
+    let prompt = "";
+
+    if (prdContext) {
+      prompt += `PROJECT CONTEXT:\n${prdContext}\n\nUse the project context above to evaluate the UI against actual product requirements and goals. Flag issues where the implementation diverges from stated requirements. Reference PRD requirements in acceptance_criteria where applicable.\n\n---\n\n`;
+    }
+
+    prompt += fs.readFileSync(promptFile, "utf-8");
+
+    prompt += `\n\n---\n\nAnalyze each of the following screenshot image files for UX and accessibility issues. Read each file listed below, then evaluate it against all the criteria described above.\n\nScreenshot files:\n`;
+    for (const png of pngs) {
+      prompt += `- ${png}\n`;
+    }
+
+    prompt += `\nReturn a single JSON object with results grouped by filename (basename only, not the full path). Each key should be the PNG filename, and each value should be an object with an "issues" array following the schema described above.\n\nExpected structure:\n{\n  "screenshots": {\n    "index_mobile.png": { "issues": [ ... ] },\n    "about_desktop.png": { "issues": [ ... ] }\n  }\n}\n\nOutput ONLY valid JSON. No markdown code fences, no explanatory text, no commentary — just the raw JSON object.\n`;
+
+    try {
+      const result = await runClaudePrint(prompt);
+      fs.writeFileSync(path.join(outputDir, "analysis-results.json"), result);
+    } catch (err) {
+      throw new Error(`Screenshot analysis failed: ${(err as Error).message}`);
+    }
   }
 
   // --- Step 4: Read and parse results --------------------------------------

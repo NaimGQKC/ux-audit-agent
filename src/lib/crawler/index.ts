@@ -5,9 +5,10 @@
  *  - Accept a URL and crawl all linked pages within the same origin
  *  - Capture screenshots at 3 viewports: mobile (375px), tablet (768px), desktop (1440px)
  *  - Return structured screenshot data for downstream analysis
+ *  - Detect auth-gated pages and signal when interactive login is needed
  */
 
-import { chromium, type Page } from "playwright";
+import { chromium, type Page, type Cookie } from "playwright";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -32,6 +33,22 @@ export interface CrawlManifest {
   routes: RouteScreenshots[];
 }
 
+export interface AuthRequiredResult {
+  needsAuth: true;
+  authUrl: string;
+  screenshot: string; // base64 PNG
+}
+
+export interface CrawlResult {
+  needsAuth: false;
+  manifest: CrawlManifest;
+}
+
+export type CrawlOutcome = AuthRequiredResult | CrawlResult;
+
+// Re-export Cookie type for consumers
+export type { Cookie };
+
 const PAGE_TIMEOUT = 30_000;
 const SETTLE_DELAY = 500;
 
@@ -48,6 +65,74 @@ function slugify(route: string): string {
     .replace(/\/$/, "")
     .replace(/[^a-zA-Z0-9]/g, "-")
     .replace(/-+/g, "-");
+}
+
+/**
+ * Detect if the current page is an auth wall.
+ * Conservative — only triggers on clearly login-like pages.
+ */
+async function detectAuthWall(page: Page): Promise<boolean> {
+  const url = page.url().toLowerCase();
+
+  // Check URL patterns for common auth/SSO providers
+  const authUrlPatterns = [
+    /\/login/,
+    /\/signin/,
+    /\/sign-in/,
+    /\/sign_in/,
+    /\/auth\//,
+    /\/sso\//,
+    /\/oauth/,
+    /okta\./,
+    /auth0\./,
+    /accounts\.google\./,
+    /login\.microsoftonline\./,
+    /\/cas\/login/,
+  ];
+
+  const urlIsAuth = authUrlPatterns.some((p) => p.test(url));
+
+  // Check for password input fields (strongest signal)
+  const hasPasswordField = await page.$$eval(
+    'input[type="password"]',
+    (inputs) => inputs.length > 0
+  );
+
+  // Check page title / h1 for login-related text
+  const titleText = await page.title();
+  const h1Text = await page
+    .$$eval("h1", (els) => els.map((e) => e.textContent || "").join(" "))
+    .catch(() => "");
+
+  const combinedText = `${titleText} ${h1Text}`.toLowerCase();
+  const loginTextPatterns = [
+    /sign\s*in/,
+    /log\s*in/,
+    /authenticate/,
+    /enter your (password|credentials)/,
+  ];
+  const hasLoginText = loginTextPatterns.some((p) => p.test(combinedText));
+
+  // Check for common SSO / OAuth buttons
+  const hasSSOButtons = await page
+    .$$eval("button, a[role='button'], a.btn, [class*='btn']", (els) => {
+      const text = els.map((e) => (e.textContent || "").toLowerCase()).join(" ");
+      return (
+        /sign in with/i.test(text) ||
+        /log in with/i.test(text) ||
+        /continue with (google|microsoft|okta|saml|sso)/i.test(text) ||
+        /sso login/i.test(text)
+      );
+    })
+    .catch(() => false);
+
+  // Conservative: require password field OR (auth URL + login text) OR SSO buttons with login text
+  if (hasPasswordField && (urlIsAuth || hasLoginText)) return true;
+  if (hasPasswordField && hasSSOButtons) return true;
+  if (urlIsAuth && hasLoginText) return true;
+  if (hasSSOButtons && hasLoginText) return true;
+
+  return false;
 }
 
 /**
@@ -82,12 +167,16 @@ async function discoverLinks(page: Page, origin: string): Promise<string[]> {
  * Crawl a site starting from `url`, discover same-origin links,
  * screenshot every route at 3 viewports, and return a manifest.
  *
+ * If auth is detected on the landing page, returns an AuthRequiredResult
+ * instead of continuing the crawl.
+ *
  * Screenshots are saved to `./screenshots/` by default.
  */
 export async function crawlAndScreenshot(
   url: string,
-  outputDir: string = path.resolve("screenshots")
-): Promise<CrawlManifest> {
+  outputDir: string = path.resolve("screenshots"),
+  cookies?: Cookie[]
+): Promise<CrawlOutcome> {
   const baseUrl = new URL(url);
   const origin = baseUrl.origin;
 
@@ -107,6 +196,12 @@ export async function crawlAndScreenshot(
     const discoveryCtx = await browser.newContext({
       viewport: VIEWPORTS.desktop,
     });
+
+    // Inject cookies if provided (from interactive login or cookie import)
+    if (cookies && cookies.length > 0) {
+      await discoveryCtx.addCookies(cookies);
+    }
+
     const discoveryPage = await discoveryCtx.newPage();
 
     try {
@@ -117,6 +212,19 @@ export async function crawlAndScreenshot(
     } catch (err) {
       console.error(`Failed to load base URL ${url}: ${(err as Error).message}`);
       throw err;
+    }
+
+    // --- Auth detection (only when no cookies were pre-injected) ---------
+    if (!cookies || cookies.length === 0) {
+      const isAuthWall = await detectAuthWall(discoveryPage);
+      if (isAuthWall) {
+        const screenshotBuffer = await discoveryPage.screenshot({ fullPage: true });
+        const screenshot = screenshotBuffer.toString("base64");
+        const authUrl = discoveryPage.url();
+        await discoveryCtx.close();
+        await browser.close();
+        return { needsAuth: true, authUrl, screenshot };
+      }
     }
 
     const discoveredRoutes = await discoverLinks(discoveryPage, origin);
@@ -141,6 +249,12 @@ export async function crawlAndScreenshot(
 
       for (const [vpName, vpSize] of Object.entries(VIEWPORTS) as [ViewportName, { width: number; height: number }][]) {
         const ctx = await browser.newContext({ viewport: vpSize });
+
+        // Inject cookies into each viewport context too
+        if (cookies && cookies.length > 0) {
+          await ctx.addCookies(cookies);
+        }
+
         const page = await ctx.newPage();
 
         try {
@@ -177,5 +291,5 @@ export async function crawlAndScreenshot(
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
   console.log(`\nManifest written to ${manifestPath}`);
 
-  return manifest;
+  return { needsAuth: false, manifest };
 }

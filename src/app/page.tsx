@@ -33,6 +33,10 @@ import {
   RefreshCw,
   Palette,
   ExternalLink,
+  Lock,
+  Cookie,
+  Camera,
+  Trash2,
 } from "lucide-react";
 import type { ViewportName } from "@/lib/crawler";
 import type { UXIssue } from "@/lib/analyzer";
@@ -70,267 +74,49 @@ interface PageAudit {
   url: string;
   title: string;
   issues: AuditIssue[];
+  screenshots: Record<ViewportName, string>;
 }
 
-type AuditPhase = "idle" | "crawling" | "screenshotting" | "analyzing" | "done";
+type AuditPhase = "idle" | "crawling" | "screenshotting" | "analyzing" | "done" | "auth_required";
+
+// Auth state for interactive login flow
+interface AuthState {
+  authUrl: string;
+  screenshot: string; // base64 PNG
+  sessionId: string | null;
+  status: "waiting" | "browser_open" | "polling" | "authenticated" | "error";
+  error?: string;
+}
+
+// Screenshot upload entry
+interface UploadedScreenshot {
+  id: string;
+  file: File;
+  preview: string; // object URL for preview
+  label: string;
+}
 
 // ---------------------------------------------------------------------------
-// Mock Data
+// Default issue fields helper
 // ---------------------------------------------------------------------------
 
-function createMockData(): PageAudit[] {
-  return [
-    {
-      url: "https://example.com",
-      title: "Homepage",
-      issues: [
-        {
-          id: "issue-1",
-          title: "Low contrast hero text",
-          heuristic: "Visibility of system status",
-          severity: "critical",
-          category: "accessibility",
-          description:
-            "The hero headline uses #999 text on a #ccc background, yielding a contrast ratio of 1.8:1 — well below the WCAG AA minimum of 4.5:1.",
-          affected_element: ".hero-title",
-          steps_to_reproduce: "1. Load the homepage. 2. Observe the hero headline text color against the background.",
-          suggested_fix: "Change color from #999 to #595959 on .hero-title to achieve a contrast ratio of 4.6:1 against #ccc background.",
-          acceptance_criteria: "Run a contrast checker on .hero-title — ratio must be >= 4.5:1 against #ccc background.",
-          affected_viewports: ["desktop", "tablet", "mobile"],
-          recommendation:
-            "Darken the text to at least #595959 or lighten the background to #fff to meet AA requirements.",
-          bounding_box: { x: 60, y: 40, width: 520, height: 80 },
-          assignee: "",
-          status: "pending",
-          editPromptOpen: false,
-          editPrompt: "",
-          isRewriting: false,
-          previousVersion: null,
-          fix: undefined,
-          variants: undefined,
-          fixStatus: "none" as FixStatus,
-          fixError: undefined,
-          refinePrompt: "",
-          refinePromptOpen: false,
-        },
-        {
-          id: "issue-2",
-          title: "Missing skip-to-content link",
-          heuristic: "Flexibility and efficiency of use",
-          severity: "major",
-          category: "usability",
-          description:
-            "There is no skip navigation link for keyboard users. Screen reader users must tab through the entire nav bar to reach main content.",
-          affected_element: "body > header",
-          steps_to_reproduce: "1. Load the page. 2. Press Tab. 3. Observe that focus moves through every nav item before reaching main content.",
-          suggested_fix: "Add <a href=\"#main\" class=\"sr-only focus:not-sr-only\">Skip to main content</a> as the first child of <body>.",
-          acceptance_criteria: "Pressing Tab on page load focuses a 'Skip to main content' link. Activating it moves focus to the main content area.",
-          affected_viewports: ["desktop", "tablet", "mobile"],
-          recommendation:
-            'Add a visually hidden "Skip to main content" link as the first focusable element in the DOM.',
-          bounding_box: { x: 0, y: 0, width: 700, height: 30 },
-          assignee: "",
-          status: "pending",
-          editPromptOpen: false,
-          editPrompt: "",
-          isRewriting: false,
-          previousVersion: null,
-          fix: undefined,
-          variants: undefined,
-          fixStatus: "none" as FixStatus,
-          fixError: undefined,
-          refinePrompt: "",
-          refinePromptOpen: false,
-        },
-        {
-          id: "issue-3",
-          title: "CTA button too small on mobile",
-          heuristic: "Error prevention",
-          severity: "minor",
-          category: "responsive",
-          description:
-            'The primary "Get Started" button is 32x28px on mobile, below the recommended 44x44px minimum tap target.',
-          affected_element: ".hero-cta",
-          steps_to_reproduce: "1. Load the homepage on a 375px viewport. 2. Inspect the 'Get Started' button dimensions.",
-          suggested_fix: "Add min-height: 44px; min-width: 44px; padding: 12px 24px; to .hero-cta.",
-          acceptance_criteria: "On 375px viewport, the 'Get Started' button measures at least 44x44px.",
-          affected_viewports: ["mobile"],
-          recommendation:
-            "Increase button padding so the tap target is at least 44x44px on mobile viewports.",
-          bounding_box: { x: 100, y: 280, width: 160, height: 28 },
-          assignee: "",
-          status: "pending",
-          editPromptOpen: false,
-          editPrompt: "",
-          isRewriting: false,
-          previousVersion: null,
-          fix: undefined,
-          variants: undefined,
-          fixStatus: "none" as FixStatus,
-          fixError: undefined,
-          refinePrompt: "",
-          refinePromptOpen: false,
-        },
-      ],
-    },
-    {
-      url: "https://example.com/pricing",
-      title: "Pricing Page",
-      issues: [
-        {
-          id: "issue-4",
-          title: "Confusing plan comparison layout",
-          heuristic: "Recognition rather than recall",
-          severity: "major",
-          category: "usability",
-          description:
-            "The three pricing tiers stack vertically on tablet, but the feature comparison rows don't align, making it hard to compare plans.",
-          affected_element: ".pricing-grid",
-          steps_to_reproduce: "1. Load the pricing page on a 768px viewport. 2. Scroll to the plan comparison section. 3. Observe misaligned feature rows across stacked cards.",
-          suggested_fix: "Add @media (max-width: 1024px) { .pricing-grid { display: grid; grid-template-columns: 1fr; } .pricing-features { display: table; width: 100%; } }",
-          acceptance_criteria: "On 768px viewport, feature comparison rows align horizontally across all plan cards, or a table toggle is available.",
-          affected_viewports: ["tablet"],
-          recommendation:
-            "Use a responsive comparison table that maintains row alignment across breakpoints, or add a toggle to switch between card and table views.",
-          bounding_box: { x: 40, y: 120, width: 600, height: 200 },
-          assignee: "",
-          status: "pending",
-          editPromptOpen: false,
-          editPrompt: "",
-          isRewriting: false,
-          previousVersion: null,
-          fix: undefined,
-          variants: undefined,
-          fixStatus: "none" as FixStatus,
-          fixError: undefined,
-          refinePrompt: "",
-          refinePromptOpen: false,
-        },
-        {
-          id: "issue-5",
-          title: "No price currency indicator",
-          heuristic: "Match between system and real world",
-          severity: "minor",
-          category: "visual",
-          description:
-            'Prices are displayed as "49/mo" without a currency symbol. International users cannot determine whether prices are in USD, EUR, or another currency.',
-          affected_element: ".pricing-card .price",
-          steps_to_reproduce: "1. Load the pricing page. 2. Observe the price labels on each plan card.",
-          suggested_fix: "Prefix price values with currency symbol: change innerText from '49/mo' to '$49/mo'. Add a geo-based currency selector component.",
-          acceptance_criteria: "All price displays include a currency symbol (e.g. $, €). A currency selector is visible on the pricing page.",
-          affected_viewports: ["desktop", "tablet", "mobile"],
-          recommendation:
-            "Prefix all prices with the currency symbol (e.g. $49/mo) and add a currency selector for international visitors.",
-          bounding_box: { x: 200, y: 160, width: 300, height: 50 },
-          assignee: "",
-          status: "pending",
-          editPromptOpen: false,
-          editPrompt: "",
-          isRewriting: false,
-          previousVersion: null,
-          fix: undefined,
-          variants: undefined,
-          fixStatus: "none" as FixStatus,
-          fixError: undefined,
-          refinePrompt: "",
-          refinePromptOpen: false,
-        },
-      ],
-    },
-    {
-      url: "https://example.com/contact",
-      title: "Contact Page",
-      issues: [
-        {
-          id: "issue-6",
-          title: "Form labels not associated with inputs",
-          heuristic: "Consistency and standards",
-          severity: "critical",
-          category: "accessibility",
-          description:
-            "The contact form uses placeholder text instead of <label> elements. Screen readers cannot identify form fields, and placeholders disappear on focus.",
-          affected_element: "#contact-form input, #contact-form textarea",
-          steps_to_reproduce: "1. Load the contact page. 2. Use a screen reader (e.g. VoiceOver) to navigate the form fields. 3. Observe that no field labels are announced.",
-          suggested_fix: "Add <label for=\"name\">Name</label> before each input. Ensure each input has a matching id attribute.",
-          acceptance_criteria: "axe DevTools reports zero 'label' violations on the contact form. Screen readers announce field labels when focused.",
-          affected_viewports: ["desktop", "tablet", "mobile"],
-          recommendation:
-            "Add visible <label> elements with for/id associations for every input. Keep placeholder text as supplementary hints only.",
-          bounding_box: { x: 80, y: 100, width: 500, height: 250 },
-          assignee: "",
-          status: "pending",
-          editPromptOpen: false,
-          editPrompt: "",
-          isRewriting: false,
-          previousVersion: null,
-          fix: undefined,
-          variants: undefined,
-          fixStatus: "none" as FixStatus,
-          fixError: undefined,
-          refinePrompt: "",
-          refinePromptOpen: false,
-        },
-        {
-          id: "issue-7",
-          title: "Submit button lacks loading state",
-          heuristic: "Visibility of system status",
-          severity: "major",
-          category: "usability",
-          description:
-            "After clicking Submit, the button does not change state. Users have no indication the form is being processed and may click multiple times.",
-          affected_element: "#contact-form button[type='submit']",
-          steps_to_reproduce: "1. Fill out the contact form. 2. Click Submit. 3. Observe the button remains unchanged during form submission.",
-          suggested_fix: "On submit, set button.disabled = true, change text to 'Sending...', and add a spinner icon. Re-enable on response.",
-          acceptance_criteria: "After clicking Submit, button is visually disabled and shows loading state within 100ms. Button re-enables after success/error.",
-          affected_viewports: ["desktop", "tablet", "mobile"],
-          recommendation:
-            "Disable the button and show a spinner or 'Sending...' text while the request is in flight. Display a success/error message on completion.",
-          bounding_box: { x: 200, y: 340, width: 180, height: 44 },
-          assignee: "",
-          status: "pending",
-          editPromptOpen: false,
-          editPrompt: "",
-          isRewriting: false,
-          previousVersion: null,
-          fix: undefined,
-          variants: undefined,
-          fixStatus: "none" as FixStatus,
-          fixError: undefined,
-          refinePrompt: "",
-          refinePromptOpen: false,
-        },
-        {
-          id: "issue-8",
-          title: "Phone input allows free text",
-          heuristic: "Error prevention",
-          severity: "minor",
-          category: "usability",
-          description:
-            'The phone number field accepts any text input. Users can submit "hello" as a phone number without validation.',
-          affected_element: "#contact-form input[name='phone']",
-          steps_to_reproduce: "1. Load the contact page. 2. Type 'hello' in the phone number field. 3. Submit the form. 4. Observe no validation error.",
-          suggested_fix: "Change input type to tel: <input type=\"tel\" pattern=\"[0-9+\\-() ]+\" />. Add client-side validation with inline error message.",
-          acceptance_criteria: "Submitting a non-numeric phone value shows an inline error. Only valid phone patterns are accepted.",
-          affected_viewports: ["desktop", "tablet", "mobile"],
-          recommendation:
-            'Use type="tel" with an input mask or pattern validation. Show inline error messaging for invalid formats.',
-          bounding_box: { x: 20, y: 200, width: 320, height: 44 },
-          assignee: "",
-          status: "pending",
-          editPromptOpen: false,
-          editPrompt: "",
-          isRewriting: false,
-          previousVersion: null,
-          fix: undefined,
-          variants: undefined,
-          fixStatus: "none" as FixStatus,
-          fixError: undefined,
-          refinePrompt: "",
-          refinePromptOpen: false,
-        },
-      ],
-    },
-  ];
+function toAuditIssue(issue: UXIssue): AuditIssue {
+  return {
+    ...issue,
+    heuristic: issue.category,
+    assignee: "",
+    status: "pending",
+    editPromptOpen: false,
+    editPrompt: "",
+    isRewriting: false,
+    previousVersion: null,
+    fix: undefined,
+    variants: undefined,
+    fixStatus: "none" as FixStatus,
+    fixError: undefined,
+    refinePrompt: "",
+    refinePromptOpen: false,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -362,23 +148,8 @@ const SEVERITY_BADGE: Record<string, string> = {
 };
 
 // ---------------------------------------------------------------------------
-// Mock screenshot placeholder
+// Screenshot components — render real Playwright screenshots
 // ---------------------------------------------------------------------------
-
-const MOCK_PAGES: Record<string, { gradient: string; elements: string }> = {
-  Homepage: {
-    gradient: "from-slate-100 to-slate-200",
-    elements: "Hero / Nav / CTA / Features",
-  },
-  "Pricing Page": {
-    gradient: "from-indigo-50 to-slate-100",
-    elements: "Plans / Comparison / FAQ",
-  },
-  "Contact Page": {
-    gradient: "from-emerald-50 to-slate-100",
-    elements: "Form / Map / Info",
-  },
-};
 
 const VIEWPORT_DIMENSIONS: Record<ViewportName, { w: number; h: number }> = {
   mobile: { w: 375, h: 812 },
@@ -393,45 +164,30 @@ function ScreenshotPlaceholder({
   page: PageAudit;
   viewport: ViewportName;
 }) {
-  const mock = MOCK_PAGES[page.title] ?? {
-    gradient: "from-gray-100 to-gray-200",
-    elements: "Content",
-  };
+  const src = page.screenshots[viewport];
   const dims = VIEWPORT_DIMENSIONS[viewport];
-  const scale =
-    viewport === "mobile" ? 0.6 : viewport === "tablet" ? 0.45 : 0.35;
+  const maxWidth =
+    viewport === "mobile" ? 225 : viewport === "tablet" ? 346 : 504;
+
+  if (!src) {
+    return (
+      <div
+        className="bg-muted rounded-lg border border-border flex items-center justify-center text-muted-foreground text-sm"
+        style={{ width: maxWidth, height: maxWidth * (dims.h / dims.w) }}
+      >
+        No screenshot
+      </div>
+    );
+  }
 
   return (
-    <div
-      className={`bg-gradient-to-br ${mock.gradient} rounded-lg border border-border relative overflow-hidden`}
-      style={{
-        width: dims.w * scale,
-        height: dims.h * scale,
-        minWidth: dims.w * scale,
-      }}
-    >
-      {/* Mock browser chrome */}
-      <div className="bg-white/80 border-b border-border/50 px-3 py-2 flex items-center gap-2">
-        <div className="w-2 h-2 rounded-full bg-red-400" />
-        <div className="w-2 h-2 rounded-full bg-yellow-400" />
-        <div className="w-2 h-2 rounded-full bg-green-400" />
-        <div className="flex-1 bg-gray-200 rounded h-3 mx-2" />
-      </div>
-      {/* Mock content blocks */}
-      <div className="p-3 space-y-2">
-        <div className="bg-white/60 rounded h-5 w-3/4" />
-        <div className="bg-white/40 rounded h-3 w-full" />
-        <div className="bg-white/40 rounded h-3 w-5/6" />
-        <div className="bg-white/40 rounded h-3 w-2/3" />
-        <div className="mt-3 bg-white/50 rounded h-16 w-full" />
-        <div className="bg-white/50 rounded h-16 w-full" />
-        <div className="mt-2 bg-primary/20 rounded h-6 w-1/3" />
-      </div>
-      {/* Viewport label */}
-      <div className="absolute bottom-2 left-2 text-[10px] text-muted-foreground font-mono">
-        {dims.w}&times;{dims.h} &middot; {mock.elements}
-      </div>
-    </div>
+    /* eslint-disable-next-line @next/next/no-img-element */
+    <img
+      src={src}
+      alt={`${page.title} — ${viewport}`}
+      className="rounded-lg border border-border object-contain"
+      style={{ maxWidth, maxHeight: 600 }}
+    />
   );
 }
 
@@ -444,42 +200,34 @@ function AnnotatedScreenshot({
   viewport: ViewportName;
   issues: AuditIssue[];
 }) {
+  const src = page.screenshots[viewport];
   const dims = VIEWPORT_DIMENSIONS[viewport];
-  const scale =
-    viewport === "mobile" ? 0.6 : viewport === "tablet" ? 0.45 : 0.35;
-  const mock = MOCK_PAGES[page.title] ?? {
-    gradient: "from-gray-100 to-gray-200",
-    elements: "Content",
-  };
+  const maxWidth =
+    viewport === "mobile" ? 225 : viewport === "tablet" ? 346 : 504;
+  const scale = maxWidth / dims.w;
 
   const visibleIssues = issues.filter((i) => i.status !== "dismissed");
 
+  if (!src) {
+    return (
+      <div
+        className="bg-muted rounded-lg border border-border flex items-center justify-center text-muted-foreground text-sm"
+        style={{ width: maxWidth, height: maxWidth * (dims.h / dims.w) }}
+      >
+        No screenshot
+      </div>
+    );
+  }
+
   return (
-    <div
-      className={`bg-gradient-to-br ${mock.gradient} rounded-lg border border-border relative overflow-hidden`}
-      style={{
-        width: dims.w * scale,
-        height: dims.h * scale,
-        minWidth: dims.w * scale,
-      }}
-    >
-      {/* Mock browser chrome */}
-      <div className="bg-white/80 border-b border-border/50 px-3 py-2 flex items-center gap-2">
-        <div className="w-2 h-2 rounded-full bg-red-400" />
-        <div className="w-2 h-2 rounded-full bg-yellow-400" />
-        <div className="w-2 h-2 rounded-full bg-green-400" />
-        <div className="flex-1 bg-gray-200 rounded h-3 mx-2" />
-      </div>
-      {/* Mock content blocks */}
-      <div className="p-3 space-y-2">
-        <div className="bg-white/60 rounded h-5 w-3/4" />
-        <div className="bg-white/40 rounded h-3 w-full" />
-        <div className="bg-white/40 rounded h-3 w-5/6" />
-        <div className="bg-white/40 rounded h-3 w-2/3" />
-        <div className="mt-3 bg-white/50 rounded h-16 w-full" />
-        <div className="bg-white/50 rounded h-16 w-full" />
-        <div className="mt-2 bg-primary/20 rounded h-6 w-1/3" />
-      </div>
+    <div className="relative inline-block">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={src}
+        alt={`${page.title} — ${viewport} (annotated)`}
+        className="rounded-lg border border-border object-contain"
+        style={{ maxWidth, maxHeight: 600 }}
+      />
       {/* Issue overlay boxes */}
       {visibleIssues.map(
         (issue) =>
@@ -504,10 +252,6 @@ function AnnotatedScreenshot({
             </div>
           )
       )}
-      {/* Viewport label */}
-      <div className="absolute bottom-2 left-2 text-[10px] text-muted-foreground font-mono">
-        {dims.w}&times;{dims.h} &middot; annotated
-      </div>
     </div>
   );
 }
@@ -1026,28 +770,32 @@ function ViewportToggle({
 // Progress Indicator
 // ---------------------------------------------------------------------------
 
-function AuditProgress({ phase }: { phase: AuditPhase }) {
-  const phases: { key: AuditPhase; label: string; pct: number }[] = [
-    { key: "crawling", label: "Crawling pages\u2026", pct: 25 },
-    { key: "screenshotting", label: "Capturing screenshots\u2026", pct: 55 },
-    { key: "analyzing", label: "Analyzing with Claude Vision\u2026", pct: 80 },
-    { key: "done", label: "Analysis complete", pct: 100 },
+function AuditProgress({ phase, detail }: { phase: AuditPhase; detail?: string }) {
+  const phases: { key: AuditPhase; pct: number }[] = [
+    { key: "crawling", pct: 25 },
+    { key: "auth_required", pct: 25 },
+    { key: "screenshotting", pct: 55 },
+    { key: "analyzing", pct: 80 },
+    { key: "done", pct: 100 },
   ];
 
   if (phase === "idle") return null;
 
   const current = phases.find((p) => p.key === phase) ?? phases[0];
+  const label = detail || (phase === "done" ? "Analysis complete" : phase === "auth_required" ? "Authentication required" : "Working...");
 
   return (
     <div className="space-y-2 animate-in fade-in slide-in-from-top-2 duration-300">
       <div className="flex items-center justify-between text-sm">
         <span className="flex items-center gap-2">
-          {phase !== "done" ? (
-            <Loader2 className="w-4 h-4 animate-spin text-primary" />
-          ) : (
+          {phase === "done" ? (
             <CheckCircle2 className="w-4 h-4 text-green-600" />
+          ) : phase === "auth_required" ? (
+            <Lock className="w-4 h-4 text-amber-500" />
+          ) : (
+            <Loader2 className="w-4 h-4 animate-spin text-primary" />
           )}
-          {current.label}
+          {label}
         </span>
         <span className="text-muted-foreground">{current.pct}%</span>
       </div>
@@ -1080,6 +828,24 @@ export default function DashboardPage() {
   });
   const [brandSaved, setBrandSaved] = useState(false);
   const [activeScreenshotView, setActiveScreenshotView] = useState<Record<string, "original" | "annotated" | "fix">>({});
+
+  // Audit progress state
+  const [progressDetail, setProgressDetail] = useState("");
+  const [auditError, setAuditError] = useState<string | null>(null);
+
+  // Auth state
+  const [authState, setAuthState] = useState<AuthState | null>(null);
+  const authPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Cookie injection state
+  const [cookiesOpen, setCookiesOpen] = useState(false);
+  const [cookieText, setCookieText] = useState("");
+  const [cookieError, setCookieError] = useState<string | null>(null);
+
+  // Screenshot upload state
+  const [screenshotUploadOpen, setScreenshotUploadOpen] = useState(false);
+  const [uploadedScreenshots, setUploadedScreenshots] = useState<UploadedScreenshot[]>([]);
+  const screenshotInputRef = useRef<HTMLInputElement>(null);
 
   // PRD context state
   const [prdOpen, setPrdOpen] = useState(false);
@@ -1160,26 +926,403 @@ export default function DashboardPage() {
   // Audit handler
   // -----------------------------------------------------------------------
 
-  const handleRunAudit = useCallback(() => {
+  // Parse cookies from text (EditThisCookie JSON format or Netscape format)
+  const parseCookieText = useCallback((text: string): Record<string, unknown>[] | null => {
+    const trimmed = text.trim();
+    if (!trimmed) return null;
+
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        // EditThisCookie exports an array of cookie objects
+        return parsed.map((c: Record<string, unknown>) => {
+          const cookie: Record<string, unknown> = {
+            name: String(c.name || ""),
+            value: String(c.value || ""),
+            domain: String(c.domain || ""),
+            path: String(c.path || "/"),
+          };
+          if (c.httpOnly != null) cookie.httpOnly = Boolean(c.httpOnly);
+          if (c.secure != null) cookie.secure = Boolean(c.secure);
+          if (c.sameSite) cookie.sameSite = String(c.sameSite);
+          return cookie;
+        });
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const handleRunAudit = useCallback(async (resumeCookies?: Record<string, unknown>[]) => {
     if (!url.trim()) return;
 
     setPhase("crawling");
     setPages([]);
+    setAuditError(null);
+    setAuthState(null);
+    setProgressDetail("Starting audit...");
 
-    // Simulate the crawl -> screenshot -> analyze pipeline
-    setTimeout(() => setPhase("screenshotting"), 1200);
-    setTimeout(() => setPhase("analyzing"), 2800);
-    setTimeout(() => {
-      const mockData = createMockData();
-      setPages(mockData);
-      const viewportMap: Record<string, ViewportName> = {};
-      mockData.forEach((p) => {
-        viewportMap[p.url] = "desktop";
+    // Determine cookies to send
+    let cookies = resumeCookies;
+    if (!cookies && cookieText.trim()) {
+      const parsed = parseCookieText(cookieText);
+      if (!parsed) {
+        setCookieError("Invalid cookie format. Paste a JSON array from EditThisCookie or similar.");
+        setPhase("idle");
+        return;
+      }
+      cookies = parsed;
+      setCookieError(null);
+    }
+
+    try {
+      const res = await fetch("/api/audit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url,
+          prdContext: prdText || undefined,
+          ...(cookies && { cookies }),
+        }),
       });
-      setActiveViewports(viewportMap);
-      setPhase("done");
-    }, 4200);
-  }, [url]);
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Request failed" }));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop()!;
+
+        let currentEvent = "";
+        let currentData = "";
+
+        for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            currentEvent = line.slice(7);
+          } else if (line.startsWith("data: ")) {
+            currentData = line.slice(6);
+          } else if (line === "") {
+            if (currentEvent && currentData) {
+              const parsed = JSON.parse(currentData);
+
+              if (currentEvent === "auth_required") {
+                setPhase("auth_required");
+                setProgressDetail("Authentication required");
+                setAuthState({
+                  authUrl: parsed.authUrl,
+                  screenshot: parsed.screenshot,
+                  sessionId: null,
+                  status: "waiting",
+                });
+                return; // Stop processing — user must complete auth
+              } else if (currentEvent === "progress") {
+                setProgressDetail(parsed.detail);
+                if (parsed.detail.includes("Crawling")) setPhase("crawling");
+                else if (parsed.detail.includes("Discovered")) setPhase("screenshotting");
+                else if (parsed.detail.includes("Analyz") || parsed.detail.includes("Reading")) setPhase("analyzing");
+                else if (parsed.detail.includes("complete")) setPhase("done");
+              } else if (currentEvent === "result") {
+                // Transform API result to PageAudit[]
+                const result = parsed as {
+                  pages: Array<{
+                    route: string;
+                    url: string;
+                    viewports: Record<string, { screenshotPath: string; issues: UXIssue[] }>;
+                  }>;
+                };
+
+                const pageAudits: PageAudit[] = result.pages.map((pg) => {
+                  const allIssues: AuditIssue[] = [];
+                  const seenIds = new Set<string>();
+
+                  for (const vpName of ["desktop", "tablet", "mobile"] as const) {
+                    const vp = pg.viewports[vpName];
+                    if (vp?.issues) {
+                      for (const issue of vp.issues) {
+                        if (!seenIds.has(issue.id)) {
+                          seenIds.add(issue.id);
+                          allIssues.push(toAuditIssue(issue));
+                        }
+                      }
+                    }
+                  }
+
+                  const screenshots = {} as Record<ViewportName, string>;
+                  for (const vpName of ["mobile", "tablet", "desktop"] as const) {
+                    const sp = pg.viewports[vpName]?.screenshotPath;
+                    screenshots[vpName] = sp
+                      ? `/api/screenshot?path=${encodeURIComponent(sp)}`
+                      : "";
+                  }
+
+                  const title =
+                    pg.route === "/"
+                      ? "Homepage"
+                      : pg.route
+                          .replace(/^\//, "")
+                          .replace(/-/g, " ")
+                          .replace(/\b\w/g, (l) => l.toUpperCase());
+
+                  return { url: pg.url, title, issues: allIssues, screenshots };
+                });
+
+                setPages(pageAudits);
+                const viewportMap: Record<string, ViewportName> = {};
+                pageAudits.forEach((p) => {
+                  viewportMap[p.url] = "desktop";
+                });
+                setActiveViewports(viewportMap);
+                setPhase("done");
+              } else if (currentEvent === "error") {
+                throw new Error(parsed.message);
+              }
+            }
+            currentEvent = "";
+            currentData = "";
+          }
+        }
+      }
+    } catch (err) {
+      setAuditError((err as Error).message);
+      setPhase("idle");
+    }
+  }, [url, prdText, cookieText, parseCookieText]);
+
+  // -----------------------------------------------------------------------
+  // Interactive login handlers
+  // -----------------------------------------------------------------------
+
+  const handleStartInteractiveLogin = useCallback(async () => {
+    if (!authState) return;
+
+    setAuthState((prev) => prev ? { ...prev, status: "browser_open" } : prev);
+
+    try {
+      const res = await fetch("/api/auth-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "start", authUrl: authState.authUrl }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Request failed" }));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+
+      const { sessionId } = await res.json();
+      setAuthState((prev) => prev ? { ...prev, sessionId, status: "polling" } : prev);
+
+      // Start polling for authentication
+      const poll = setInterval(async () => {
+        try {
+          const checkRes = await fetch("/api/auth-session", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "check", sessionId }),
+          });
+
+          if (!checkRes.ok) return;
+          const { authenticated } = await checkRes.json();
+
+          if (authenticated) {
+            clearInterval(poll);
+            authPollRef.current = null;
+
+            setAuthState((prev) => prev ? { ...prev, status: "authenticated" } : prev);
+
+            // Complete the session — get cookies
+            const completeRes = await fetch("/api/auth-session", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action: "complete", sessionId }),
+            });
+
+            if (!completeRes.ok) {
+              throw new Error("Failed to complete auth session");
+            }
+
+            const { cookies } = await completeRes.json();
+            setAuthState(null);
+
+            // Resume audit with cookies
+            handleRunAudit(cookies);
+          }
+        } catch {
+          // Polling error — continue trying
+        }
+      }, 2000);
+
+      authPollRef.current = poll;
+    } catch (err) {
+      setAuthState((prev) =>
+        prev ? { ...prev, status: "error", error: (err as Error).message } : prev
+      );
+    }
+  }, [authState, handleRunAudit]);
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      if (authPollRef.current) {
+        clearInterval(authPollRef.current);
+      }
+    };
+  }, []);
+
+  // -----------------------------------------------------------------------
+  // Screenshot upload handlers
+  // -----------------------------------------------------------------------
+
+  const handleScreenshotFiles = useCallback((files: FileList | File[]) => {
+    const newScreenshots: UploadedScreenshot[] = [];
+    for (const file of Array.from(files)) {
+      if (!file.type.startsWith("image/")) continue;
+      newScreenshots.push({
+        id: `upload-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        file,
+        preview: URL.createObjectURL(file),
+        label: file.name.replace(/\.[^.]+$/, ""),
+      });
+    }
+    setUploadedScreenshots((prev) => [...prev, ...newScreenshots]);
+  }, []);
+
+  const handleRemoveScreenshot = useCallback((id: string) => {
+    setUploadedScreenshots((prev) => {
+      const item = prev.find((s) => s.id === id);
+      if (item) URL.revokeObjectURL(item.preview);
+      return prev.filter((s) => s.id !== id);
+    });
+  }, []);
+
+  const handleAnalyzeScreenshots = useCallback(async () => {
+    if (uploadedScreenshots.length === 0) return;
+
+    setPhase("analyzing");
+    setPages([]);
+    setAuditError(null);
+    setProgressDetail("Uploading and analyzing screenshots...");
+
+    try {
+      const formData = new FormData();
+      for (const ss of uploadedScreenshots) {
+        formData.append("images", ss.file);
+        formData.append("labels", ss.label);
+      }
+      if (prdText) {
+        formData.append("prdContext", prdText);
+      }
+
+      const res = await fetch("/api/audit-screenshots", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Request failed" }));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop()!;
+
+        let currentEvent = "";
+        let currentData = "";
+
+        for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            currentEvent = line.slice(7);
+          } else if (line.startsWith("data: ")) {
+            currentData = line.slice(6);
+          } else if (line === "") {
+            if (currentEvent && currentData) {
+              const parsed = JSON.parse(currentData);
+
+              if (currentEvent === "progress") {
+                setProgressDetail(parsed.detail);
+                if (parsed.detail.includes("complete")) setPhase("done");
+              } else if (currentEvent === "result") {
+                const result = parsed as {
+                  pages: Array<{
+                    route: string;
+                    url: string;
+                    viewports: Record<string, { screenshotPath: string; issues: UXIssue[] }>;
+                  }>;
+                };
+
+                const pageAudits: PageAudit[] = result.pages.map((pg) => {
+                  const allIssues: AuditIssue[] = [];
+                  const seenIds = new Set<string>();
+
+                  for (const vpName of ["desktop", "tablet", "mobile"] as const) {
+                    const vp = pg.viewports[vpName];
+                    if (vp?.issues) {
+                      for (const issue of vp.issues) {
+                        if (!seenIds.has(issue.id)) {
+                          seenIds.add(issue.id);
+                          allIssues.push(toAuditIssue(issue));
+                        }
+                      }
+                    }
+                  }
+
+                  const screenshots = {} as Record<ViewportName, string>;
+                  for (const vpName of ["mobile", "tablet", "desktop"] as const) {
+                    const sp = pg.viewports[vpName]?.screenshotPath;
+                    screenshots[vpName] = sp
+                      ? `/api/screenshot?path=${encodeURIComponent(sp)}`
+                      : "";
+                  }
+
+                  const title = pg.route
+                    .replace(/^\//, "")
+                    .replace(/-/g, " ")
+                    .replace(/\b\w/g, (l) => l.toUpperCase()) || "Uploaded Page";
+
+                  return { url: pg.url, title, issues: allIssues, screenshots };
+                });
+
+                setPages(pageAudits);
+                const viewportMap: Record<string, ViewportName> = {};
+                pageAudits.forEach((p) => {
+                  viewportMap[p.url] = "desktop";
+                });
+                setActiveViewports(viewportMap);
+                setPhase("done");
+              } else if (currentEvent === "error") {
+                throw new Error(parsed.message);
+              }
+            }
+            currentEvent = "";
+            currentData = "";
+          }
+        }
+      }
+    } catch (err) {
+      setAuditError((err as Error).message);
+      setPhase("idle");
+    }
+  }, [uploadedScreenshots, prdText]);
 
   // -----------------------------------------------------------------------
   // Issue update handler
@@ -1445,16 +1588,54 @@ export default function DashboardPage() {
   // Push to Asana handler
   // -----------------------------------------------------------------------
 
-  const handlePushToAsana = useCallback(() => {
-    const fixCount = pages.reduce(
-      (acc, p) => acc + p.issues.filter((i) => i.status === "approved" && i.fix).length,
-      0
+  const [isPushingAsana, setIsPushingAsana] = useState(false);
+
+  const handlePushToAsana = useCallback(async () => {
+    const approvedIssues = pages.flatMap((p) =>
+      p.issues.filter((i) => i.status === "approved")
     );
-    const fixNote = fixCount > 0 ? `\n\n${fixCount} issue(s) include generated fix mockups that will be attached.` : "";
-    alert(
-      `Pushing ${totalApproved} approved issue(s) to Asana\u2026${fixNote}\n\nThis will be wired to the Asana API in a future update.`
-    );
-  }, [totalApproved, pages]);
+    if (approvedIssues.length === 0) return;
+
+    setIsPushingAsana(true);
+    try {
+      const res = await fetch("/api/asana", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          issues: approvedIssues.map((i) => ({
+            title: i.title,
+            description: i.description,
+            severity: i.severity,
+            category: i.category,
+            affected_element: i.affected_element,
+            steps_to_reproduce: i.steps_to_reproduce,
+            suggested_fix: i.suggested_fix,
+            acceptance_criteria: i.acceptance_criteria,
+            affected_viewports: i.affected_viewports,
+            recommendation: i.recommendation,
+            ...(i.assignee ? { assignee: i.assignee } : {}),
+          })),
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Request failed" }));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      alert(
+        `Created ${data.summary.created} Asana ticket(s).` +
+          (data.summary.failed > 0
+            ? ` ${data.summary.failed} failed.`
+            : "")
+      );
+    } catch (err) {
+      alert(`Failed to push to Asana: ${(err as Error).message}`);
+    } finally {
+      setIsPushingAsana(false);
+    }
+  }, [pages]);
 
   return (
     <div className="min-h-screen bg-background font-[family-name:var(--font-geist-sans)]">
@@ -1503,12 +1684,12 @@ export default function DashboardPage() {
                 placeholder="Enter a URL to audit (e.g. https://example.com)"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleRunAudit()}
+                onKeyDown={(e) => { if (e.key === "Enter") handleRunAudit(); }}
                 className="pl-9 h-11 text-sm"
               />
             </div>
             <Button
-              onClick={handleRunAudit}
+              onClick={() => handleRunAudit()}
               disabled={!url.trim() || (phase !== "idle" && phase !== "done")}
               className="h-11 px-6"
             >
@@ -1604,8 +1785,286 @@ export default function DashboardPage() {
             )}
           </div>
 
+          {/* Advanced: Cookie Import */}
+          <div className="border border-border rounded-lg overflow-hidden">
+            <button
+              onClick={() => setCookiesOpen(!cookiesOpen)}
+              className="w-full flex items-center justify-between px-4 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+            >
+              <span className="flex items-center gap-2">
+                <Cookie className="w-4 h-4" />
+                Advanced: Import Cookies
+                {cookieText && (
+                  <Badge variant="secondary" className="text-[10px]">
+                    configured
+                  </Badge>
+                )}
+              </span>
+              {cookiesOpen ? (
+                <ChevronDown className="w-4 h-4" />
+              ) : (
+                <ChevronRight className="w-4 h-4" />
+              )}
+            </button>
+            {cookiesOpen && (
+              <div className="px-4 pb-4 space-y-3 border-t border-border animate-in fade-in slide-in-from-top-1 duration-200">
+                <p className="text-xs text-muted-foreground pt-3">
+                  Export cookies from your browser using EditThisCookie or similar extension, then paste the JSON array here. Cookies are kept in memory only and never saved to disk.
+                </p>
+                <Textarea
+                  placeholder='[{"name": "session", "value": "abc123", "domain": ".example.com", "path": "/"}]'
+                  value={cookieText}
+                  onChange={(e) => {
+                    setCookieText(e.target.value);
+                    setCookieError(null);
+                  }}
+                  className="min-h-[80px] text-sm font-mono"
+                />
+                {cookieError && (
+                  <p className="text-xs text-red-500 flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3" />
+                    {cookieError}
+                  </p>
+                )}
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      if (cookieText.trim()) {
+                        const parsed = parseCookieText(cookieText);
+                        if (parsed) {
+                          setCookieError(null);
+                        } else {
+                          setCookieError("Invalid cookie format. Paste a JSON array from EditThisCookie or similar.");
+                        }
+                      }
+                    }}
+                    disabled={!cookieText.trim()}
+                  >
+                    <Cookie className="w-3.5 h-3.5 mr-1.5" />
+                    Validate Cookies
+                  </Button>
+                  {cookieText && (
+                    <button
+                      onClick={() => {
+                        setCookieText("");
+                        setCookieError(null);
+                      }}
+                      className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Advanced: Upload Screenshots */}
+          <div className="border border-border rounded-lg overflow-hidden">
+            <button
+              onClick={() => setScreenshotUploadOpen(!screenshotUploadOpen)}
+              className="w-full flex items-center justify-between px-4 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+            >
+              <span className="flex items-center gap-2">
+                <Camera className="w-4 h-4" />
+                Advanced: Upload Screenshots
+                {uploadedScreenshots.length > 0 && (
+                  <Badge variant="secondary" className="text-[10px]">
+                    {uploadedScreenshots.length} file{uploadedScreenshots.length !== 1 ? "s" : ""}
+                  </Badge>
+                )}
+              </span>
+              {screenshotUploadOpen ? (
+                <ChevronDown className="w-4 h-4" />
+              ) : (
+                <ChevronRight className="w-4 h-4" />
+              )}
+            </button>
+            {screenshotUploadOpen && (
+              <div className="px-4 pb-4 space-y-3 border-t border-border animate-in fade-in slide-in-from-top-1 duration-200">
+                <p className="text-xs text-muted-foreground pt-3">
+                  Upload screenshots directly to skip the crawling step. Useful for pages behind VPN, hardware 2FA, or when you already have screenshots.
+                </p>
+
+                {/* Drop zone */}
+                <div
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (e.dataTransfer.files.length > 0) {
+                      handleScreenshotFiles(e.dataTransfer.files);
+                    }
+                  }}
+                  onClick={() => screenshotInputRef.current?.click()}
+                  className="border-2 border-dashed border-border rounded-lg p-4 text-center cursor-pointer hover:border-primary/40 hover:bg-muted/30 transition-colors"
+                >
+                  <input
+                    ref={screenshotInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/jpg,image/webp"
+                    multiple
+                    onChange={(e) => {
+                      if (e.target.files && e.target.files.length > 0) {
+                        handleScreenshotFiles(e.target.files);
+                      }
+                      e.target.value = "";
+                    }}
+                    className="hidden"
+                  />
+                  <Upload className="w-5 h-5 text-muted-foreground mx-auto mb-1.5" />
+                  <p className="text-sm text-muted-foreground">
+                    Drop screenshots here or click to browse
+                  </p>
+                  <p className="text-xs text-muted-foreground/60 mt-0.5">
+                    PNG, JPG, or WebP
+                  </p>
+                </div>
+
+                {/* Uploaded files list */}
+                {uploadedScreenshots.length > 0 && (
+                  <div className="space-y-2">
+                    {uploadedScreenshots.map((ss) => (
+                      <div key={ss.id} className="flex items-center gap-3 p-2 rounded-lg border border-border bg-muted/20">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={ss.preview}
+                          alt={ss.label}
+                          className="w-16 h-12 object-cover rounded border border-border"
+                        />
+                        <Input
+                          placeholder="Page name or URL"
+                          value={ss.label}
+                          onChange={(e) => {
+                            setUploadedScreenshots((prev) =>
+                              prev.map((s) =>
+                                s.id === ss.id ? { ...s, label: e.target.value } : s
+                              )
+                            );
+                          }}
+                          className="flex-1 h-8 text-sm"
+                        />
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => handleRemoveScreenshot(ss.id)}
+                          className="h-8 px-2 text-muted-foreground hover:text-red-500"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </Button>
+                      </div>
+                    ))}
+                    <Button
+                      size="sm"
+                      onClick={handleAnalyzeScreenshots}
+                      disabled={phase !== "idle" && phase !== "done"}
+                      className="h-9"
+                    >
+                      {phase === "analyzing" ? (
+                        <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                      ) : (
+                        <Search className="w-3.5 h-3.5 mr-1.5" />
+                      )}
+                      Analyze {uploadedScreenshots.length} Screenshot{uploadedScreenshots.length !== 1 ? "s" : ""}
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Auth Required Panel */}
+          {authState && phase === "auth_required" && (
+            <div className="border-2 border-amber-300 rounded-lg bg-amber-50/50 p-4 space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
+              <div className="flex items-start gap-3">
+                <Lock className="w-5 h-5 text-amber-600 mt-0.5 shrink-0" />
+                <div className="space-y-1">
+                  <h3 className="font-semibold text-amber-900">This page requires authentication</h3>
+                  <p className="text-sm text-amber-800">
+                    Click below to open a browser window where you can log in. Once authenticated, we&apos;ll continue the audit automatically.
+                  </p>
+                </div>
+              </div>
+
+              {/* Login page screenshot preview */}
+              {authState.screenshot && (
+                <div className="rounded-lg border border-amber-200 overflow-hidden max-w-md mx-auto">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={`data:image/png;base64,${authState.screenshot}`}
+                    alt="Login page"
+                    className="w-full h-auto"
+                  />
+                </div>
+              )}
+
+              <div className="flex items-center gap-3">
+                {authState.status === "waiting" && (
+                  <Button
+                    onClick={handleStartInteractiveLogin}
+                    className="bg-amber-600 hover:bg-amber-700 text-white"
+                  >
+                    <ExternalLink className="w-4 h-4 mr-2" />
+                    Log In
+                  </Button>
+                )}
+                {authState.status === "browser_open" && (
+                  <Button disabled className="bg-amber-600 text-white">
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Opening browser...
+                  </Button>
+                )}
+                {authState.status === "polling" && (
+                  <div className="flex items-center gap-2 text-sm text-amber-700">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Browser opened — complete your login there. Waiting for you...
+                  </div>
+                )}
+                {authState.status === "authenticated" && (
+                  <div className="flex items-center gap-2 text-sm text-green-700">
+                    <CheckCircle2 className="w-4 h-4" />
+                    Authenticated! Resuming audit...
+                  </div>
+                )}
+                {authState.status === "error" && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-red-600">
+                      Error: {authState.error}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleStartInteractiveLogin}
+                    >
+                      Retry
+                    </Button>
+                  </div>
+                )}
+              </div>
+
+              <p className="text-xs text-amber-600">
+                URL: <span className="font-mono">{authState.authUrl}</span>
+              </p>
+            </div>
+          )}
+
           {/* Progress */}
-          <AuditProgress phase={phase} />
+          <AuditProgress phase={phase} detail={progressDetail} />
+
+          {/* Error banner */}
+          {auditError && (
+            <div className="flex items-center gap-2 px-4 py-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>Audit failed: {auditError}</span>
+              <button
+                onClick={() => setAuditError(null)}
+                className="ml-auto text-red-500 hover:text-red-700"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
 
           {/* Stitch disconnected banner */}
           {!stitchConnected && phase === "done" && (
@@ -1754,7 +2213,7 @@ export default function DashboardPage() {
         )}
 
         {/* Loading state */}
-        {phase !== "idle" && phase !== "done" && pages.length === 0 && (
+        {phase !== "idle" && phase !== "done" && phase !== "auth_required" && pages.length === 0 && (
           <div className="text-center py-24 space-y-3">
             <Loader2 className="w-10 h-10 animate-spin text-primary mx-auto" />
             <p className="text-muted-foreground">
@@ -1914,12 +2373,17 @@ export default function DashboardPage() {
             </p>
             <Button
               onClick={handlePushToAsana}
-              disabled={totalApproved === 0}
+              disabled={totalApproved === 0 || isPushingAsana}
               className="h-10 px-6"
             >
-              <ArrowUpToLine className="w-4 h-4 mr-2" />
-              Push {totalApproved > 0 ? `${totalApproved} ` : ""}approved to
-              Asana
+              {isPushingAsana ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <ArrowUpToLine className="w-4 h-4 mr-2" />
+              )}
+              {isPushingAsana
+                ? "Pushing..."
+                : `Push ${totalApproved > 0 ? `${totalApproved} ` : ""}approved to Asana`}
             </Button>
           </div>
         </footer>
