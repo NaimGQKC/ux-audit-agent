@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -28,9 +28,15 @@ import {
   Send,
   Undo2,
   X,
+  Wand2,
+  ImageIcon,
+  RefreshCw,
+  Palette,
+  ExternalLink,
 } from "lucide-react";
 import type { ViewportName } from "@/lib/crawler";
 import type { UXIssue } from "@/lib/analyzer";
+import type { FixStatus, GenerateFixResult } from "@/lib/stitch/types";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,6 +58,12 @@ interface AuditIssue extends UXIssue {
   editPrompt: string;
   isRewriting: boolean;
   previousVersion: PreviousVersion | null;
+  fix?: GenerateFixResult;
+  variants?: GenerateFixResult[];
+  fixStatus: FixStatus;
+  fixError?: string;
+  refinePrompt: string;
+  refinePromptOpen: boolean;
 }
 
 interface PageAudit {
@@ -94,6 +106,12 @@ function createMockData(): PageAudit[] {
           editPrompt: "",
           isRewriting: false,
           previousVersion: null,
+          fix: undefined,
+          variants: undefined,
+          fixStatus: "none" as FixStatus,
+          fixError: undefined,
+          refinePrompt: "",
+          refinePromptOpen: false,
         },
         {
           id: "issue-2",
@@ -117,6 +135,12 @@ function createMockData(): PageAudit[] {
           editPrompt: "",
           isRewriting: false,
           previousVersion: null,
+          fix: undefined,
+          variants: undefined,
+          fixStatus: "none" as FixStatus,
+          fixError: undefined,
+          refinePrompt: "",
+          refinePromptOpen: false,
         },
         {
           id: "issue-3",
@@ -140,6 +164,12 @@ function createMockData(): PageAudit[] {
           editPrompt: "",
           isRewriting: false,
           previousVersion: null,
+          fix: undefined,
+          variants: undefined,
+          fixStatus: "none" as FixStatus,
+          fixError: undefined,
+          refinePrompt: "",
+          refinePromptOpen: false,
         },
       ],
     },
@@ -169,6 +199,12 @@ function createMockData(): PageAudit[] {
           editPrompt: "",
           isRewriting: false,
           previousVersion: null,
+          fix: undefined,
+          variants: undefined,
+          fixStatus: "none" as FixStatus,
+          fixError: undefined,
+          refinePrompt: "",
+          refinePromptOpen: false,
         },
         {
           id: "issue-5",
@@ -192,6 +228,12 @@ function createMockData(): PageAudit[] {
           editPrompt: "",
           isRewriting: false,
           previousVersion: null,
+          fix: undefined,
+          variants: undefined,
+          fixStatus: "none" as FixStatus,
+          fixError: undefined,
+          refinePrompt: "",
+          refinePromptOpen: false,
         },
       ],
     },
@@ -221,6 +263,12 @@ function createMockData(): PageAudit[] {
           editPrompt: "",
           isRewriting: false,
           previousVersion: null,
+          fix: undefined,
+          variants: undefined,
+          fixStatus: "none" as FixStatus,
+          fixError: undefined,
+          refinePrompt: "",
+          refinePromptOpen: false,
         },
         {
           id: "issue-7",
@@ -244,6 +292,12 @@ function createMockData(): PageAudit[] {
           editPrompt: "",
           isRewriting: false,
           previousVersion: null,
+          fix: undefined,
+          variants: undefined,
+          fixStatus: "none" as FixStatus,
+          fixError: undefined,
+          refinePrompt: "",
+          refinePromptOpen: false,
         },
         {
           id: "issue-8",
@@ -267,6 +321,12 @@ function createMockData(): PageAudit[] {
           editPrompt: "",
           isRewriting: false,
           previousVersion: null,
+          fix: undefined,
+          variants: undefined,
+          fixStatus: "none" as FixStatus,
+          fixError: undefined,
+          refinePrompt: "",
+          refinePromptOpen: false,
         },
       ],
     },
@@ -495,11 +555,19 @@ function IssueCard({
   onUpdate,
   onRewrite,
   prdContext,
+  onGenerateFix,
+  onRefineFix,
+  onGenerateVariants,
+  stitchConnected,
 }: {
   issue: AuditIssue;
   onUpdate: (id: string, patch: Partial<AuditIssue>) => void;
   onRewrite: (issue: AuditIssue, instruction: string, prdContext: string) => void;
   prdContext: string;
+  onGenerateFix: (issue: AuditIssue) => void;
+  onRefineFix: (issue: AuditIssue, instruction: string) => void;
+  onGenerateVariants: (issue: AuditIssue) => void;
+  stitchConnected: boolean;
 }) {
   const isDismissed = issue.status === "dismissed";
   const isApproved = issue.status === "approved";
@@ -741,6 +809,161 @@ function IssueCard({
             )}
           </div>
         )}
+
+        {/* Stitch — Generate Fix */}
+        {stitchConnected && (
+          <div className="space-y-3 pt-2 border-t border-border">
+            <div className="flex items-center gap-2">
+              {issue.fixStatus === "none" && (
+                <Button
+                  size="sm"
+                  className="bg-violet-600 hover:bg-violet-700 text-white"
+                  onClick={() => onGenerateFix(issue)}
+                  disabled={isDismissed}
+                >
+                  <Wand2 className="w-3.5 h-3.5 mr-1.5" />
+                  Generate Fix
+                </Button>
+              )}
+              {issue.fixStatus === "generating" && (
+                <Button size="sm" className="bg-violet-600 text-white" disabled>
+                  <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                  Generating fix...
+                </Button>
+              )}
+              {(issue.fixStatus === "generated" || issue.fixStatus === "refined") && (
+                <>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="text-violet-600 border-violet-200 hover:bg-violet-50"
+                    onClick={() => onUpdate(issue.id, { refinePromptOpen: !issue.refinePromptOpen, refinePrompt: "" })}
+                  >
+                    <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
+                    Refine
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="text-violet-600 border-violet-200 hover:bg-violet-50"
+                    onClick={() => onGenerateVariants(issue)}
+                  >
+                    <ImageIcon className="w-3.5 h-3.5 mr-1.5" />
+                    Show Variants
+                  </Button>
+                  <Badge variant="outline" className="text-violet-600 border-violet-200">
+                    <Wand2 className="w-3 h-3 mr-0.5" />
+                    {issue.fixStatus === "refined" ? "refined" : "fix generated"}
+                  </Badge>
+                </>
+              )}
+              {issue.fixStatus === "error" && (
+                <>
+                  <Button
+                    size="sm"
+                    className="bg-violet-600 hover:bg-violet-700 text-white"
+                    onClick={() => onGenerateFix(issue)}
+                  >
+                    <Wand2 className="w-3.5 h-3.5 mr-1.5" />
+                    Retry Fix
+                  </Button>
+                  <span className="text-xs text-red-500">
+                    Fix generation failed{issue.fixError ? `: ${issue.fixError}` : ""}
+                  </span>
+                </>
+              )}
+            </div>
+
+            {/* Fix preview */}
+            {issue.fix && (issue.fixStatus === "generated" || issue.fixStatus === "refined") && (
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-violet-600 uppercase tracking-wide flex items-center gap-1">
+                  <Wand2 className="w-3 h-3" />
+                  Generated Fix Mockup
+                </label>
+                <div className="rounded-lg border-2 border-violet-200 overflow-hidden bg-violet-50/30">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={issue.fix.imageUrl}
+                    alt={`Fix mockup for: ${issue.title}`}
+                    className="w-full h-auto"
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Refine prompt */}
+            {issue.refinePromptOpen && (
+              <div className="p-3 bg-violet-50/50 rounded-lg border border-violet-200 space-y-2">
+                <div className="flex items-center gap-2 text-xs text-violet-600">
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  Describe how to refine this fix
+                </div>
+                <div className="flex items-center gap-2">
+                  <Input
+                    placeholder='e.g. "make the CTA bigger" or "use darker background"'
+                    value={issue.refinePrompt}
+                    onChange={(e) => onUpdate(issue.id, { refinePrompt: e.target.value })}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        if (issue.refinePrompt.trim()) onRefineFix(issue, issue.refinePrompt.trim());
+                      }
+                      if (e.key === "Escape") {
+                        onUpdate(issue.id, { refinePromptOpen: false, refinePrompt: "" });
+                      }
+                    }}
+                    className="flex-1 h-9 text-sm"
+                  />
+                  <Button
+                    size="sm"
+                    onClick={() => { if (issue.refinePrompt.trim()) onRefineFix(issue, issue.refinePrompt.trim()); }}
+                    disabled={!issue.refinePrompt.trim()}
+                    className="h-9 px-3 bg-violet-600 hover:bg-violet-700"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => onUpdate(issue.id, { refinePromptOpen: false, refinePrompt: "" })}
+                    className="h-9 px-2"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* Variants gallery */}
+            {issue.variants && issue.variants.length > 0 && (
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-violet-600 uppercase tracking-wide">
+                  Variants
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {issue.variants.map((variant, idx) => (
+                    <div
+                      key={variant.screenId}
+                      className="rounded-lg border border-violet-200 overflow-hidden cursor-pointer hover:border-violet-400 transition-colors"
+                      onClick={() => onUpdate(issue.id, { fix: variant, fixStatus: "generated" as FixStatus })}
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={variant.imageUrl}
+                        alt={`Variant ${idx + 1}`}
+                        className="w-full h-auto"
+                      />
+                      <div className="px-2 py-1 text-[10px] text-violet-600 text-center bg-violet-50">
+                        Variant {idx + 1}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -845,11 +1068,31 @@ export default function DashboardPage() {
     Record<string, ViewportName>
   >({});
 
+  // Stitch state
+  const [stitchConnected, setStitchConnected] = useState(false);
+  const [stitchProjectId, setStitchProjectId] = useState<string | null>(null);
+  const [brandSettingsOpen, setBrandSettingsOpen] = useState(false);
+  const [brandConfig, setBrandConfig] = useState({
+    primaryColor: "#2563eb",
+    secondaryColor: "#64748b",
+    fontFamily: "Inter, system-ui, sans-serif",
+    accentColor: "#8b5cf6",
+  });
+  const [brandSaved, setBrandSaved] = useState(false);
+  const [activeScreenshotView, setActiveScreenshotView] = useState<Record<string, "original" | "annotated" | "fix">>({});
+
   // PRD context state
   const [prdOpen, setPrdOpen] = useState(false);
   const [prdText, setPrdText] = useState("");
   const [prdFileName, setPrdFileName] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    fetch("/api/stitch/setup")
+      .then((res) => res.json())
+      .then((data) => setStitchConnected(data.connected))
+      .catch(() => setStitchConnected(false));
+  }, []);
 
   const totalApproved = pages.reduce(
     (acc, p) => acc + p.issues.filter((i) => i.status === "approved").length,
@@ -865,23 +1108,39 @@ export default function DashboardPage() {
   // File upload handler
   // -----------------------------------------------------------------------
 
+  const parseFile = useCallback(async (file: File) => {
+    const ext = file.name.split(".").pop()?.toLowerCase();
+
+    // Plain text files can be read directly in the browser
+    if (ext === "txt" || ext === "md") {
+      const text = await file.text();
+      setPrdText(text);
+      return;
+    }
+
+    // Binary formats (.pdf, .docx) are parsed server-side
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch("/api/parse-document", { method: "POST", body: form });
+    const json = await res.json();
+    if (!res.ok) {
+      console.error("Parse error:", json.error);
+      setPrdText(`[Error parsing ${file.name}: ${json.error}]`);
+      return;
+    }
+    setPrdText(json.text);
+  }, []);
+
   const handleFileUpload = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
       setPrdFileName(file.name);
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        const text = ev.target?.result;
-        if (typeof text === "string") {
-          setPrdText(text);
-        }
-      };
-      reader.readAsText(file);
+      parseFile(file);
       // Reset the input so the same file can be re-selected
       e.target.value = "";
     },
-    []
+    [parseFile]
   );
 
   const handleFileDrop = useCallback(
@@ -890,18 +1149,11 @@ export default function DashboardPage() {
       const file = e.dataTransfer.files?.[0];
       if (!file) return;
       const ext = file.name.split(".").pop()?.toLowerCase();
-      if (!["txt", "md", "pdf"].includes(ext ?? "")) return;
+      if (!["txt", "md", "pdf", "docx"].includes(ext ?? "")) return;
       setPrdFileName(file.name);
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        const text = ev.target?.result;
-        if (typeof text === "string") {
-          setPrdText(text);
-        }
-      };
-      reader.readAsText(file);
+      parseFile(file);
     },
-    []
+    [parseFile]
   );
 
   // -----------------------------------------------------------------------
@@ -1028,14 +1280,181 @@ export default function DashboardPage() {
   );
 
   // -----------------------------------------------------------------------
+  // Stitch handlers
+  // -----------------------------------------------------------------------
+
+  const handleGenerateFix = useCallback(
+    async (issue: AuditIssue) => {
+      const ownerPage = pages.find((p) => p.issues.some((i) => i.id === issue.id));
+      if (!ownerPage) return;
+
+      handleUpdateIssue(ownerPage.url, issue.id, { fixStatus: "generating" as FixStatus, fixError: undefined });
+
+      try {
+        const res = await fetch("/api/stitch/generate-fix", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            issueId: issue.id,
+            issueTitle: issue.title,
+            issueDescription: issue.description,
+            recommendation: issue.recommendation,
+            severity: issue.severity,
+            category: issue.category,
+            projectId: stitchProjectId,
+            auditUrl: url,
+          }),
+        });
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: "Request failed" }));
+          throw new Error(err.error ?? `HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        if (!stitchProjectId && data.projectId) {
+          setStitchProjectId(data.projectId);
+        }
+
+        handleUpdateIssue(ownerPage.url, issue.id, {
+          fix: { screenId: data.screenId, imageUrl: data.imageUrl, prompt: "" },
+          fixStatus: "generated" as FixStatus,
+        });
+      } catch (err) {
+        handleUpdateIssue(ownerPage.url, issue.id, {
+          fixStatus: "error" as FixStatus,
+          fixError: (err as Error).message,
+        });
+      }
+    },
+    [pages, handleUpdateIssue, stitchProjectId, url]
+  );
+
+  const handleRefinefix = useCallback(
+    async (issue: AuditIssue, instruction: string) => {
+      if (!issue.fix || !stitchProjectId) return;
+      const ownerPage = pages.find((p) => p.issues.some((i) => i.id === issue.id));
+      if (!ownerPage) return;
+
+      handleUpdateIssue(ownerPage.url, issue.id, { fixStatus: "generating" as FixStatus });
+
+      try {
+        const res = await fetch("/api/stitch/edit-screen", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            projectId: stitchProjectId,
+            screenIds: [issue.fix.screenId],
+            prompt: instruction,
+          }),
+        });
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: "Request failed" }));
+          throw new Error(err.error ?? `HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        handleUpdateIssue(ownerPage.url, issue.id, {
+          fix: { screenId: data.screenId, imageUrl: data.imageUrl, prompt: instruction },
+          fixStatus: "refined" as FixStatus,
+          refinePromptOpen: false,
+          refinePrompt: "",
+        });
+      } catch (err) {
+        handleUpdateIssue(ownerPage.url, issue.id, {
+          fixStatus: "error" as FixStatus,
+          fixError: (err as Error).message,
+        });
+      }
+    },
+    [pages, handleUpdateIssue, stitchProjectId]
+  );
+
+  const handleGenerateVariants = useCallback(
+    async (issue: AuditIssue) => {
+      if (!issue.fix || !stitchProjectId) return;
+      const ownerPage = pages.find((p) => p.issues.some((i) => i.id === issue.id));
+      if (!ownerPage) return;
+
+      try {
+        const res = await fetch("/api/stitch/generate-variants", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            projectId: stitchProjectId,
+            screenIds: [issue.fix.screenId],
+            prompt: `Generate variants fixing: ${issue.title}`,
+            count: 3,
+          }),
+        });
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: "Request failed" }));
+          throw new Error(err.error ?? `HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        handleUpdateIssue(ownerPage.url, issue.id, { variants: data.variants });
+      } catch (err) {
+        alert(`Variant generation failed: ${(err as Error).message}`);
+      }
+    },
+    [pages, handleUpdateIssue, stitchProjectId]
+  );
+
+  const handleSaveBrand = useCallback(async () => {
+    try {
+      let projId = stitchProjectId;
+      if (!projId) {
+        const initRes = await fetch("/api/stitch/generate-fix", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            issueId: "brand-init",
+            issueTitle: "Brand initialization",
+            issueDescription: "N/A",
+            recommendation: "N/A",
+            severity: "minor",
+            category: "visual",
+            auditUrl: url || "https://brand-setup.local",
+          }),
+        });
+        const initData = await initRes.json();
+        projId = initData.projectId;
+        if (projId) setStitchProjectId(projId);
+      }
+      if (!projId) return;
+
+      const res = await fetch("/api/stitch/design-system", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...brandConfig, projectId: projId }),
+      });
+
+      if (res.ok) {
+        setBrandSaved(true);
+        setTimeout(() => setBrandSaved(false), 3000);
+      }
+    } catch {
+      alert("Failed to save brand settings");
+    }
+  }, [brandConfig, stitchProjectId, url]);
+
+  // -----------------------------------------------------------------------
   // Push to Asana handler
   // -----------------------------------------------------------------------
 
   const handlePushToAsana = useCallback(() => {
-    alert(
-      `Pushing ${totalApproved} approved issue(s) to Asana\u2026\n\nThis will be wired to the Asana API in a future update.`
+    const fixCount = pages.reduce(
+      (acc, p) => acc + p.issues.filter((i) => i.status === "approved" && i.fix).length,
+      0
     );
-  }, [totalApproved]);
+    const fixNote = fixCount > 0 ? `\n\n${fixCount} issue(s) include generated fix mockups that will be attached.` : "";
+    alert(
+      `Pushing ${totalApproved} approved issue(s) to Asana\u2026${fixNote}\n\nThis will be wired to the Asana API in a future update.`
+    );
+  }, [totalApproved, pages]);
 
   return (
     <div className="min-h-screen bg-background font-[family-name:var(--font-geist-sans)]">
@@ -1140,7 +1559,7 @@ export default function DashboardPage() {
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept=".txt,.md,.pdf"
+                    accept=".txt,.md,.pdf,.docx"
                     onChange={handleFileUpload}
                     className="hidden"
                   />
@@ -1149,7 +1568,7 @@ export default function DashboardPage() {
                     Drop a file here or click to browse
                   </p>
                   <p className="text-xs text-muted-foreground/60 mt-0.5">
-                    .txt, .md, or .pdf
+                    .txt, .md, .pdf, or .docx
                   </p>
                 </div>
 
@@ -1187,6 +1606,129 @@ export default function DashboardPage() {
 
           {/* Progress */}
           <AuditProgress phase={phase} />
+
+          {/* Stitch disconnected banner */}
+          {!stitchConnected && phase === "done" && (
+            <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-violet-50 border border-violet-200 text-sm text-violet-700">
+              <Wand2 className="w-4 h-4 shrink-0" />
+              <span>Connect Google Stitch to generate visual fixes for issues</span>
+              <a
+                href="/stitch-setup"
+                className="ml-auto text-xs font-medium text-violet-600 hover:text-violet-800 flex items-center gap-1"
+              >
+                Setup Guide
+                <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
+          )}
+
+          {/* Brand Settings */}
+          {stitchConnected && (
+            <div className="border border-violet-200 rounded-lg overflow-hidden bg-violet-50/30">
+              <button
+                onClick={() => setBrandSettingsOpen(!brandSettingsOpen)}
+                className="w-full flex items-center justify-between px-4 py-2.5 text-sm font-medium text-violet-700 hover:bg-violet-50 transition-colors"
+              >
+                <span className="flex items-center gap-2">
+                  <Palette className="w-4 h-4" />
+                  Brand Settings
+                  {brandSaved && (
+                    <Badge className="bg-green-100 text-green-700 border-green-200 text-[10px]">
+                      <CheckCircle2 className="w-3 h-3 mr-0.5" />
+                      Saved
+                    </Badge>
+                  )}
+                </span>
+                {brandSettingsOpen ? (
+                  <ChevronDown className="w-4 h-4" />
+                ) : (
+                  <ChevronRight className="w-4 h-4" />
+                )}
+              </button>
+              {brandSettingsOpen && (
+                <div className="px-4 pb-4 space-y-3 border-t border-violet-200 animate-in fade-in slide-in-from-top-1 duration-200">
+                  <p className="text-xs text-muted-foreground pt-3">
+                    Configure your brand colors and typography so generated fixes match your design system.
+                  </p>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-muted-foreground">Primary Color</label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="color"
+                          value={brandConfig.primaryColor}
+                          onChange={(e) => setBrandConfig((c) => ({ ...c, primaryColor: e.target.value }))}
+                          className="w-8 h-8 rounded border border-border cursor-pointer"
+                        />
+                        <Input
+                          value={brandConfig.primaryColor}
+                          onChange={(e) => setBrandConfig((c) => ({ ...c, primaryColor: e.target.value }))}
+                          className="h-8 text-xs font-mono"
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-muted-foreground">Secondary Color</label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="color"
+                          value={brandConfig.secondaryColor}
+                          onChange={(e) => setBrandConfig((c) => ({ ...c, secondaryColor: e.target.value }))}
+                          className="w-8 h-8 rounded border border-border cursor-pointer"
+                        />
+                        <Input
+                          value={brandConfig.secondaryColor}
+                          onChange={(e) => setBrandConfig((c) => ({ ...c, secondaryColor: e.target.value }))}
+                          className="h-8 text-xs font-mono"
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-muted-foreground">Accent Color</label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="color"
+                          value={brandConfig.accentColor}
+                          onChange={(e) => setBrandConfig((c) => ({ ...c, accentColor: e.target.value }))}
+                          className="w-8 h-8 rounded border border-border cursor-pointer"
+                        />
+                        <Input
+                          value={brandConfig.accentColor}
+                          onChange={(e) => setBrandConfig((c) => ({ ...c, accentColor: e.target.value }))}
+                          className="h-8 text-xs font-mono"
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-muted-foreground">Font Family</label>
+                      <select
+                        value={brandConfig.fontFamily}
+                        onChange={(e) => setBrandConfig((c) => ({ ...c, fontFamily: e.target.value }))}
+                        className="w-full h-8 rounded border border-border bg-background px-2 text-xs"
+                      >
+                        <option value="Inter, system-ui, sans-serif">Inter</option>
+                        <option value="Roboto, sans-serif">Roboto</option>
+                        <option value="Open Sans, sans-serif">Open Sans</option>
+                        <option value="Lato, sans-serif">Lato</option>
+                        <option value="Poppins, sans-serif">Poppins</option>
+                        <option value="Montserrat, sans-serif">Montserrat</option>
+                        <option value="system-ui, sans-serif">System UI</option>
+                        <option value="Georgia, serif">Georgia</option>
+                      </select>
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    className="bg-violet-600 hover:bg-violet-700 text-white"
+                    onClick={handleSaveBrand}
+                  >
+                    <Palette className="w-3.5 h-3.5 mr-1.5" />
+                    Save Brand Settings
+                  </Button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </header>
 
@@ -1250,6 +1792,25 @@ export default function DashboardPage() {
                 />
               </div>
 
+              {/* Screenshot view toggle */}
+              <div className="flex items-center gap-2">
+                {(["original", "annotated", ...(page.issues.some(i => i.fix) ? ["fix" as const] : [])] as const).map((view) => (
+                  <button
+                    key={view}
+                    onClick={() => setActiveScreenshotView((prev) => ({ ...prev, [page.url]: view }))}
+                    className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                      (activeScreenshotView[page.url] ?? "original") === view
+                        ? view === "fix"
+                          ? "bg-violet-100 text-violet-700 shadow-sm"
+                          : "bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {view === "original" ? "Original" : view === "annotated" ? "Issues" : "Fix"}
+                  </button>
+                ))}
+              </div>
+
               {/* Side-by-side screenshots */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {/* Original */}
@@ -1262,27 +1823,44 @@ export default function DashboardPage() {
                     <ScreenshotPlaceholder page={page} viewport={viewport} />
                   </div>
                 </div>
-                {/* Annotated */}
-                <div className="space-y-2">
-                  <h3 className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
-                    <AlertTriangle className="w-3.5 h-3.5" />
-                    Annotated Issues
-                    <Badge variant="secondary" className="ml-1 text-xs">
-                      {
-                        page.issues.filter((i) => i.status !== "dismissed")
-                          .length
-                      }{" "}
-                      active
-                    </Badge>
-                  </h3>
-                  <div className="flex justify-center p-4 bg-muted/30 rounded-xl border border-border">
-                    <AnnotatedScreenshot
-                      page={page}
-                      viewport={viewport}
-                      issues={page.issues}
-                    />
+                {/* Annotated or Fix */}
+                {(activeScreenshotView[page.url] ?? "original") === "fix" && page.issues.find(i => i.fix) ? (
+                  <div className="space-y-2">
+                    <h3 className="text-sm font-medium text-violet-600 flex items-center gap-1.5">
+                      <Wand2 className="w-3.5 h-3.5" />
+                      Generated Fix
+                    </h3>
+                    <div className="flex justify-center p-4 bg-violet-50/30 rounded-xl border-2 border-violet-200">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={page.issues.find(i => i.fix)!.fix!.imageUrl}
+                        alt="Generated fix mockup"
+                        className="rounded-lg max-h-[400px] object-contain"
+                      />
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="space-y-2">
+                    <h3 className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                      Annotated Issues
+                      <Badge variant="secondary" className="ml-1 text-xs">
+                        {
+                          page.issues.filter((i) => i.status !== "dismissed")
+                            .length
+                        }{" "}
+                        active
+                      </Badge>
+                    </h3>
+                    <div className="flex justify-center p-4 bg-muted/30 rounded-xl border border-border">
+                      <AnnotatedScreenshot
+                        page={page}
+                        viewport={viewport}
+                        issues={page.issues}
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Issue cards */}
@@ -1300,6 +1878,10 @@ export default function DashboardPage() {
                       }
                       onRewrite={handleRewriteIssue}
                       prdContext={prdText}
+                      onGenerateFix={handleGenerateFix}
+                      onRefineFix={handleRefinefix}
+                      onGenerateVariants={handleGenerateVariants}
+                      stitchConnected={stitchConnected}
                     />
                   ))}
                 </div>
