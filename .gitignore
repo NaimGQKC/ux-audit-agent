@@ -34,3 +34,13 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# crawler output
+/screenshots
+
+# agent skills (reinstall via npx skills add)
+/.agents
+/.windsurf
+/skills
+/.claude/skills
+skills-lock.json

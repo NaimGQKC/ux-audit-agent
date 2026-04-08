@@ -9,7 +9,19 @@
       "Bash(rm -rf ux-audit-agent-temp)",
       "Bash(cp ux-audit-agent-temp/.eslintrc.json ux-audit-agent-temp/.gitignore ux-audit-agent-temp/package-lock.json ux-audit-agent-temp/package.json ux-audit-agent-temp/postcss.config.mjs ux-audit-agent-temp/tailwind.config.ts ux-audit-agent-temp/tsconfig.json ux-audit-agent/)",
       "Bash(cp -r ux-audit-agent-temp/src ux-audit-agent/)",
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(npm run:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(gh repo:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx playwright:*)",
+      "Bash(npx tsx:*)",
+      "Bash(chmod:*)",
+      "Bash(find /c/Users/Naim/projects/ux-audit-agent/src -type f \\\\\\(-name *.ts -o -name *.tsx -o -name *.js -o -name *.jsx \\\\\\))",
+      "Bash(node:*)",
+      "Bash(npm uninstall:*)"
     ]
   }
 }
