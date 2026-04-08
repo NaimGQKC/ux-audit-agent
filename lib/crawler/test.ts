@@ -37,6 +37,10 @@ async function main() {
       process.exit(1);
     }
 
+    if (!("manifest" in outcome)) {
+      console.error("Unexpected outcome");
+      process.exit(1);
+    }
     const manifest = outcome.manifest;
     console.log("\n--- Manifest ---");
     console.log(JSON.stringify(manifest, null, 2));
