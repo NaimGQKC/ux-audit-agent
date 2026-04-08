@@ -6,11 +6,17 @@
  *  - Capture screenshots at 3 viewports: mobile (375px), tablet (768px), desktop (1440px)
  *  - Return structured screenshot data for downstream analysis
  *  - Detect auth-gated pages and signal when interactive login is needed
+ *
+ * Performance: creates one browser context per viewport upfront and reuses
+ * them across all routes. Viewports are screenshotted in parallel per route.
  */
 
-import { chromium, type Page, type Cookie } from "playwright";
+import { chromium, type BrowserContext, type Page, type Cookie } from "playwright";
 import * as fs from "fs";
 import * as path from "path";
+import {
+  headlessPersistentNavigate,
+} from "./persistent-session";
 
 export const VIEWPORTS = {
   mobile: { width: 375, height: 812 },
@@ -20,15 +26,20 @@ export const VIEWPORTS = {
 
 export type ViewportName = keyof typeof VIEWPORTS;
 
+const VIEWPORT_ENTRIES = Object.entries(VIEWPORTS) as [ViewportName, { width: number; height: number }][];
+
 export interface RouteScreenshots {
   route: string;
   url: string;
+  /** Maps viewport name → screenshot filename (not full path). */
   screenshots: Record<ViewportName, string>;
 }
 
 export interface CrawlManifest {
   baseUrl: string;
   timestamp: string;
+  /** Temp directory name (e.g. "ux-audit-1712345678901"), used to locate screenshots. */
+  sessionId: string;
   totalRoutes: number;
   routes: RouteScreenshots[];
 }
@@ -39,12 +50,18 @@ export interface AuthRequiredResult {
   screenshot: string; // base64 PNG
 }
 
+export interface SSORedirectResult {
+  needsSSOLogin: true;
+  redirectUrl: string;
+  requestedOrigin: string;
+}
+
 export interface CrawlResult {
   needsAuth: false;
   manifest: CrawlManifest;
 }
 
-export type CrawlOutcome = AuthRequiredResult | CrawlResult;
+export type CrawlOutcome = AuthRequiredResult | SSORedirectResult | CrawlResult;
 
 // Re-export Cookie type for consumers
 export type { Cookie };
@@ -170,23 +187,61 @@ async function discoverLinks(page: Page, origin: string): Promise<string[]> {
  * If auth is detected on the landing page, returns an AuthRequiredResult
  * instead of continuing the crawl.
  *
- * Screenshots are saved to `./screenshots/` by default.
+ * Performance: creates 3 browser contexts upfront (one per viewport) and
+ * reuses them for all routes. Viewports are captured in parallel per route.
  */
 export async function crawlAndScreenshot(
   url: string,
   outputDir: string = path.resolve("screenshots"),
-  cookies?: Cookie[]
+  cookies?: Cookie[],
+  usePersistedSession?: boolean
 ): Promise<CrawlOutcome> {
   const baseUrl = new URL(url);
   const origin = baseUrl.origin;
 
   fs.mkdirSync(outputDir, { recursive: true });
 
+  // Session ID is the directory basename (e.g. "ux-audit-1712345678901")
+  const sessionId = path.basename(outputDir);
+
+  // --- Persistent session: use saved profile for cookie/SSO passthrough --
+  if (usePersistedSession && (!cookies || cookies.length === 0)) {
+    console.log("Using persistent browser profile for session passthrough...");
+    const { cookies: profileCookies, finalUrl } =
+      await headlessPersistentNavigate(url);
+
+    // Check for SSO redirect: final URL origin differs from requested origin
+    try {
+      const finalOrigin = new URL(finalUrl).origin;
+      if (finalOrigin !== origin) {
+        console.log(
+          `SSO redirect detected: ${origin} → ${finalOrigin} (${finalUrl})`
+        );
+        return {
+          needsSSOLogin: true,
+          redirectUrl: finalUrl,
+          requestedOrigin: origin,
+        };
+      }
+    } catch {
+      // malformed finalUrl — continue without profile cookies
+    }
+
+    // Profile had valid session — use its cookies for the crawl
+    if (profileCookies.length > 0) {
+      console.log(
+        `Persistent profile provided ${profileCookies.length} cookie(s)`
+      );
+      cookies = profileCookies;
+    }
+  }
+
   const browser = await chromium.launch();
 
   const manifest: CrawlManifest = {
     baseUrl: url,
     timestamp: new Date().toISOString(),
+    sessionId,
     totalRoutes: 0,
     routes: [],
   };
@@ -197,7 +252,7 @@ export async function crawlAndScreenshot(
       viewport: VIEWPORTS.desktop,
     });
 
-    // Inject cookies if provided (from interactive login or cookie import)
+    // Inject cookies if provided (from interactive login, cookie import, or persistent profile)
     if (cookies && cookies.length > 0) {
       await discoveryCtx.addCookies(cookies);
     }
@@ -237,7 +292,18 @@ export async function crawlAndScreenshot(
     console.log(`Discovered ${routes.length} route(s):`);
     routes.forEach((r) => console.log(`  ${r}`));
 
-    // --- Step 2: Screenshot each route at each viewport -----------------
+    // --- Step 2: Create one context + page per viewport (reused across routes)
+    const vpState: Record<ViewportName, { ctx: BrowserContext; page: Page }> = {} as never;
+
+    for (const [vpName, vpSize] of VIEWPORT_ENTRIES) {
+      const ctx = await browser.newContext({ viewport: vpSize });
+      if (cookies && cookies.length > 0) {
+        await ctx.addCookies(cookies);
+      }
+      vpState[vpName] = { ctx, page: await ctx.newPage() };
+    }
+
+    // --- Step 3: Screenshot each route — all viewports in parallel ------
     for (const route of routes) {
       const fullUrl = `${origin}${route}`;
       const slug = slugify(route);
@@ -247,38 +313,41 @@ export async function crawlAndScreenshot(
         screenshots: { mobile: "", tablet: "", desktop: "" },
       };
 
-      for (const [vpName, vpSize] of Object.entries(VIEWPORTS) as [ViewportName, { width: number; height: number }][]) {
-        const ctx = await browser.newContext({ viewport: vpSize });
+      const results = await Promise.all(
+        VIEWPORT_ENTRIES.map(async ([vpName]) => {
+          const { page } = vpState[vpName];
+          try {
+            await page.goto(fullUrl, {
+              waitUntil: "networkidle",
+              timeout: PAGE_TIMEOUT,
+            });
+            await page.waitForTimeout(SETTLE_DELAY);
 
-        // Inject cookies into each viewport context too
-        if (cookies && cookies.length > 0) {
-          await ctx.addCookies(cookies);
-        }
+            const filename = `${slug}_${vpName}.png`;
+            await page.screenshot({
+              path: path.join(outputDir, filename),
+              fullPage: true,
+            });
 
-        const page = await ctx.newPage();
+            console.log(`  ✓ ${route} @ ${vpName}`);
+            return { vpName, filename };
+          } catch (err) {
+            console.error(`  ✗ ${route} @ ${vpName}: ${(err as Error).message}`);
+            return { vpName, filename: "" };
+          }
+        })
+      );
 
-        try {
-          await page.goto(fullUrl, {
-            waitUntil: "networkidle",
-            timeout: PAGE_TIMEOUT,
-          });
-          await page.waitForTimeout(SETTLE_DELAY);
-
-          const filename = `${slug}_${vpName}.png`;
-          const filepath = path.join(outputDir, filename);
-
-          await page.screenshot({ path: filepath, fullPage: true });
-          routeEntry.screenshots[vpName] = filepath;
-
-          console.log(`  ✓ ${route} @ ${vpName}`);
-        } catch (err) {
-          console.error(`  ✗ ${route} @ ${vpName}: ${(err as Error).message}`);
-        } finally {
-          await ctx.close();
-        }
+      for (const { vpName, filename } of results) {
+        routeEntry.screenshots[vpName] = filename;
       }
 
       manifest.routes.push(routeEntry);
+    }
+
+    // Cleanup viewport contexts
+    for (const { ctx } of Object.values(vpState)) {
+      await ctx.close();
     }
 
     manifest.totalRoutes = manifest.routes.length;
@@ -286,10 +355,23 @@ export async function crawlAndScreenshot(
     await browser.close();
   }
 
-  // --- Step 3: Write manifest -------------------------------------------
+  // --- Step 4: Write manifest -------------------------------------------
   const manifestPath = path.join(outputDir, "manifest.json");
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
   console.log(`\nManifest written to ${manifestPath}`);
 
   return { needsAuth: false, manifest };
 }
+
+// Re-export persistent-session utilities for consumers
+export {
+  hasPersistedSession,
+  clearBrowserProfile,
+  BROWSER_PROFILE_DIR,
+  launchHeadedPersistentBrowser,
+  extractCookiesAndClose,
+  checkSSOReturn,
+  setReadySignal,
+  waitForReadySignal,
+  generateSessionId,
+} from "./persistent-session";

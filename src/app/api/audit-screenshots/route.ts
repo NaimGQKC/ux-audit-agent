@@ -5,6 +5,10 @@ import os from "node:os";
 import { validateAnalysisResult, type UXIssue } from "@/lib/analyzer";
 import { type ViewportName, VIEWPORTS } from "@/lib/crawler";
 import { runClaudePrint } from "@/lib/claude";
+import { saveAuditToCache } from "@/lib/cache";
+
+/** Max screenshots per Claude call to stay within context limits. */
+const BATCH_SIZE = 6;
 
 // ---------------------------------------------------------------------------
 // Types (same output format as /api/audit)
@@ -143,7 +147,8 @@ async function runScreenshotAudit(
 ): Promise<void> {
   sse.sendProgress(`Processing ${images.length} uploaded screenshot(s)...`);
 
-  const outputDir = path.join(os.tmpdir(), `ux-audit-upload-${Date.now()}`);
+  const sessionId = `ux-audit-upload-${Date.now()}`;
+  const outputDir = path.join(os.tmpdir(), sessionId);
   fs.mkdirSync(outputDir, { recursive: true });
 
   // Save images to temp directory
@@ -168,58 +173,55 @@ async function runScreenshotAudit(
 
   sse.sendProgress(`Saved ${savedFiles.length} screenshot(s). Analyzing with Claude...`);
 
-  // Build analysis prompt
+  // Load prompt template
   const promptFile = path.join(process.cwd(), "src", "lib", "analyzer", "ux-analysis-prompt.txt");
   if (!fs.existsSync(promptFile)) {
     throw new Error(`Prompt file not found at ${promptFile}`);
   }
+  const basePrompt = fs.readFileSync(promptFile, "utf-8");
 
-  let prompt = "";
-  if (prdContext) {
-    prompt += `PROJECT CONTEXT:\n${prdContext}\n\nUse the project context above to evaluate the UI against actual product requirements and goals. Flag issues where the implementation diverges from stated requirements. Reference PRD requirements in acceptance_criteria where applicable.\n\n---\n\n`;
+  // Analyze in batches of BATCH_SIZE
+  const allFilepaths = savedFiles.map((sf) => sf.filepath);
+  const totalBatches = Math.ceil(allFilepaths.length / BATCH_SIZE);
+  const mergedScreenshots: Record<string, unknown> = {};
+
+  for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
+    const batchFiles = allFilepaths.slice(batchIdx * BATCH_SIZE, (batchIdx + 1) * BATCH_SIZE);
+    const batchLabel = totalBatches > 1
+      ? `Analyzing batch ${batchIdx + 1}/${totalBatches} (${batchFiles.length} screenshots)...`
+      : `Analyzing ${batchFiles.length} screenshot(s)...`;
+
+    sse.sendProgress(batchLabel, batchIdx, totalBatches);
+
+    let prompt = "";
+    if (prdContext) {
+      prompt += `PROJECT CONTEXT:\n${prdContext}\n\nUse the project context above to evaluate the UI against actual product requirements and goals. Flag issues where the implementation diverges from stated requirements. Reference PRD requirements in acceptance_criteria where applicable.\n\n---\n\n`;
+    }
+    if (repoContext) {
+      prompt += `REPOSITORY CONTEXT:\nThe following files were extracted from the project's GitHub repository. Use them to understand the design system, tech stack, component patterns, and project conventions. Reference specific design tokens, component names, or config values in your recommendations where relevant.\n\n${repoContext}\n\n---\n\n`;
+    }
+    prompt += basePrompt;
+    prompt += `\n\n---\n\nAnalyze each of the following screenshot image files for UX and accessibility issues. Read each file listed below, then evaluate it against all the criteria described above.\n\nScreenshot files:\n`;
+    for (const fp of batchFiles) {
+      prompt += `- ${fp}\n`;
+    }
+    const exampleFile = path.basename(batchFiles[0]);
+    prompt += `\nReturn a single JSON object with results grouped by filename (basename only, not the full path). Each key should be the PNG filename, and each value should be an object with an "issues" array following the schema described above.\n\nExpected structure:\n{\n  "screenshots": {\n    "${exampleFile}": { "issues": [ ... ] }\n  }\n}\n\nOutput ONLY valid JSON. No markdown code fences, no explanatory text, no commentary — just the raw JSON object.\n`;
+
+    try {
+      const raw = await runClaudePrint(prompt, { label: `upload-batch-${batchIdx + 1}` });
+      const jsonText = raw.trim().replace(/^```(?:json)?\s*\n?/, "").replace(/\n?\s*```\s*$/, "");
+      const data = JSON.parse(jsonText) as { screenshots?: Record<string, unknown> };
+      if (data.screenshots && typeof data.screenshots === "object") {
+        Object.assign(mergedScreenshots, data.screenshots);
+      }
+    } catch (err) {
+      sse.sendProgress(`Warning: batch ${batchIdx + 1}/${totalBatches} failed: ${(err as Error).message}`);
+    }
   }
 
-  if (repoContext) {
-    prompt += `REPOSITORY CONTEXT:\nThe following files were extracted from the project's GitHub repository. Use them to understand the design system, tech stack, component patterns, and project conventions. Reference specific design tokens, component names, or config values in your recommendations where relevant.\n\n${repoContext}\n\n---\n\n`;
-  }
-
-  prompt += fs.readFileSync(promptFile, "utf-8");
-
-  prompt += `\n\n---\n\nAnalyze each of the following screenshot image files for UX and accessibility issues. Read each file listed below, then evaluate it against all the criteria described above.\n\nScreenshot files:\n`;
-  for (const sf of savedFiles) {
-    prompt += `- ${sf.filepath}\n`;
-  }
-
-  prompt += `\nReturn a single JSON object with results grouped by filename (basename only, not the full path). Each key should be the PNG filename, and each value should be an object with an "issues" array following the schema described above.\n\nExpected structure:\n{\n  "screenshots": {\n    "${savedFiles[0]?.filename || "page_desktop.png"}": { "issues": [ ... ] }\n  }\n}\n\nOutput ONLY valid JSON. No markdown code fences, no explanatory text, no commentary — just the raw JSON object.\n`;
-
-  try {
-    const result = await runClaudePrint(prompt);
-    fs.writeFileSync(path.join(outputDir, "analysis-results.json"), result);
-  } catch (err) {
-    throw new Error(`Screenshot analysis failed: ${(err as Error).message}`);
-  }
-
-  // Parse results
   sse.sendProgress("Reading analysis results...");
-
-  const resultsPath = path.join(outputDir, "analysis-results.json");
-  const rawResults = fs.readFileSync(resultsPath, "utf-8");
-
-  const jsonText = rawResults
-    .trim()
-    .replace(/^```(?:json)?\s*\n?/, "")
-    .replace(/\n?\s*```\s*$/, "");
-
-  let analysisData: { screenshots: Record<string, unknown> };
-  try {
-    analysisData = JSON.parse(jsonText);
-  } catch {
-    throw new Error("Failed to parse analysis results as JSON");
-  }
-
-  if (!analysisData.screenshots || typeof analysisData.screenshots !== "object") {
-    throw new Error("Invalid analysis results: missing 'screenshots' object");
-  }
+  const analysisData = { screenshots: mergedScreenshots };
 
   // Map results — each uploaded image becomes a "page" with desktop viewport
   const pages: PageResult[] = savedFiles.map((sf) => {
@@ -243,7 +245,8 @@ async function runScreenshotAudit(
           }
         }
 
-        viewports[vpName] = { screenshotPath: sf.filepath, issues };
+        const url = `/api/screenshot?s=${encodeURIComponent(sessionId)}&f=${encodeURIComponent(sf.filename)}`;
+        viewports[vpName] = { screenshotPath: url, issues };
       } else {
         viewports[vpName] = { screenshotPath: "", issues: [] };
       }
@@ -262,6 +265,13 @@ async function runScreenshotAudit(
     timestamp: new Date().toISOString(),
     pages,
   };
+
+  // Persist to cache
+  try {
+    saveAuditToCache(result, outputDir);
+  } catch (err) {
+    sse.sendProgress(`Warning: failed to cache results: ${(err as Error).message}`);
+  }
 
   sse.sendProgress("Audit complete.", savedFiles.length, savedFiles.length);
   sse.sendResult(result);

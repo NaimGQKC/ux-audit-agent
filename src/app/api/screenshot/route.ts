@@ -2,28 +2,68 @@ import { NextRequest } from "next/server";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { getCacheDir } from "@/lib/cache";
 
 /**
- * Serves screenshot images from the audit temp directory.
- * Only allows serving .png files from the OS temp directory for security.
+ * Serves screenshot images using a session ID + filename lookup.
+ *
+ * URL formats:
+ *   /api/screenshot?s=<sessionId>&f=<filename>     — from tmp dir (live audit)
+ *   /api/screenshot?c=<cacheId>&f=<filename>       — from .ux-audit-cache (persisted)
+ *
+ * Security: IDs and filenames are validated against strict patterns
+ * and the full path is always constructed server-side.
  */
+
+/** Session IDs produced by the crawler / upload routes. */
+const SESSION_PATTERN = /^ux-audit-(?:upload-)?\d+$/;
+
+/** Cache IDs: hostname-slug_hexhash */
+const CACHE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
+/** Only safe filenames: alphanumeric, hyphens, underscores, single dot before png. */
+const FILENAME_PATTERN = /^[a-zA-Z0-9_-]+\.png$/;
+
 export async function GET(request: NextRequest) {
-  const filePath = request.nextUrl.searchParams.get("path");
+  const sessionId = request.nextUrl.searchParams.get("s");
+  const cacheId = request.nextUrl.searchParams.get("c");
+  const filename = request.nextUrl.searchParams.get("f");
 
-  if (!filePath) {
-    return new Response("Missing path parameter", { status: 400 });
+  if (!filename) {
+    return new Response("Missing required parameter: f (filename)", { status: 400 });
   }
 
-  // Security: only allow files within the OS temp directory
-  const resolved = path.resolve(filePath);
-  const tmpDir = os.tmpdir();
-  if (!resolved.startsWith(tmpDir)) {
-    return new Response("Access denied", { status: 403 });
+  if (!sessionId && !cacheId) {
+    return new Response("Missing required parameter: s (session) or c (cache)", { status: 400 });
   }
 
-  // Only serve PNG files
-  if (path.extname(resolved).toLowerCase() !== ".png") {
-    return new Response("Only PNG files are allowed", { status: 403 });
+  // Validate filename against strict pattern
+  if (!FILENAME_PATTERN.test(filename)) {
+    return new Response("Invalid filename", { status: 400 });
+  }
+
+  let resolved: string;
+
+  if (cacheId) {
+    // Serve from cache directory
+    if (!CACHE_ID_PATTERN.test(cacheId)) {
+      return new Response("Invalid cache ID", { status: 400 });
+    }
+    const filepath = path.join(getCacheDir(), cacheId, "screenshots", filename);
+    resolved = path.resolve(filepath);
+    if (!resolved.startsWith(path.resolve(getCacheDir()))) {
+      return new Response("Access denied", { status: 403 });
+    }
+  } else {
+    // Serve from tmp directory
+    if (!SESSION_PATTERN.test(sessionId!)) {
+      return new Response("Invalid session ID", { status: 400 });
+    }
+    const filepath = path.join(os.tmpdir(), sessionId!, filename);
+    resolved = path.resolve(filepath);
+    if (!resolved.startsWith(path.resolve(os.tmpdir()))) {
+      return new Response("Access denied", { status: 403 });
+    }
   }
 
   if (!fs.existsSync(resolved)) {

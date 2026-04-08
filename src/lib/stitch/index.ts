@@ -6,7 +6,7 @@
  * additional API cost (uses the user's Claude Code subscription).
  */
 
-import { execFile } from "node:child_process";
+import { runClaudePrint } from "@/lib/claude";
 import type {
   StitchProject,
   StitchDesignSystem,
@@ -21,34 +21,8 @@ import type {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const TIMEOUT_MS = 120_000; // 2 minutes per Stitch call
-
-/**
- * Run `claude -p` with the given prompt and return the raw stdout.
- */
 function runClaude(prompt: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = execFile(
-      "claude",
-      ["-p"],
-      {
-        timeout: TIMEOUT_MS,
-        maxBuffer: 10 * 1024 * 1024, // 10 MB
-        shell: true, // Required on Windows to resolve `claude` from PATH
-      },
-      (error, stdout, stderr) => {
-        if (error) {
-          console.error("[stitch] claude CLI error:", error.message);
-          if (stderr) console.error("[stitch] stderr:", stderr);
-          reject(new Error(`Stitch claude CLI failed: ${error.message}`));
-          return;
-        }
-        resolve(stdout.trim());
-      }
-    );
-    child.stdin?.write(prompt);
-    child.stdin?.end();
-  });
+  return runClaudePrint(prompt, { label: "stitch" });
 }
 
 /**

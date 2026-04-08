@@ -26,8 +26,18 @@ async function main() {
   console.log(`\nCrawling ${url} ...\n`);
 
   try {
-    const manifest = await crawlAndScreenshot(url);
+    const outcome = await crawlAndScreenshot(url);
 
+    if ("needsAuth" in outcome && outcome.needsAuth) {
+      console.log("Auth required:", outcome.authUrl);
+      process.exit(1);
+    }
+    if ("needsSSOLogin" in outcome && outcome.needsSSOLogin) {
+      console.log("SSO login required, redirected to:", outcome.redirectUrl);
+      process.exit(1);
+    }
+
+    const manifest = outcome.manifest;
     console.log("\n--- Manifest ---");
     console.log(JSON.stringify(manifest, null, 2));
     console.log(`\nDone — ${manifest.totalRoutes} route(s) screenshotted.`);
