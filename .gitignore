@@ -40,3 +40,7 @@ next-env.d.ts
 
 # agent skills (reinstall via npx skills add)
 /.agents
+/.windsurf
+/skills
+/.claude/skills
+skills-lock.json
