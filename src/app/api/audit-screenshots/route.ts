@@ -86,6 +86,7 @@ export async function POST(request: NextRequest) {
   const images: File[] = [];
   const labels: string[] = [];
   const prdContext = formData.get("prdContext") as string | null;
+  const repoContext = formData.get("repoContext") as string | null;
 
   // Collect all image entries
   const allEntries = formData.getAll("images");
@@ -111,7 +112,7 @@ export async function POST(request: NextRequest) {
       const sse = createSSEWriter(controller);
 
       try {
-        await runScreenshotAudit(images, labels, sse, prdContext || undefined);
+        await runScreenshotAudit(images, labels, sse, prdContext || undefined, repoContext || undefined);
       } catch (err) {
         sse.sendError((err as Error).message);
       } finally {
@@ -137,7 +138,8 @@ async function runScreenshotAudit(
   images: File[],
   labels: string[],
   sse: SSEWriter,
-  prdContext?: string
+  prdContext?: string,
+  repoContext?: string,
 ): Promise<void> {
   sse.sendProgress(`Processing ${images.length} uploaded screenshot(s)...`);
 
@@ -175,6 +177,10 @@ async function runScreenshotAudit(
   let prompt = "";
   if (prdContext) {
     prompt += `PROJECT CONTEXT:\n${prdContext}\n\nUse the project context above to evaluate the UI against actual product requirements and goals. Flag issues where the implementation diverges from stated requirements. Reference PRD requirements in acceptance_criteria where applicable.\n\n---\n\n`;
+  }
+
+  if (repoContext) {
+    prompt += `REPOSITORY CONTEXT:\nThe following files were extracted from the project's GitHub repository. Use them to understand the design system, tech stack, component patterns, and project conventions. Reference specific design tokens, component names, or config values in your recommendations where relevant.\n\n${repoContext}\n\n---\n\n`;
   }
 
   prompt += fs.readFileSync(promptFile, "utf-8");

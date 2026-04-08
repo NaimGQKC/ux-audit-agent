@@ -14,6 +14,7 @@ import { runClaudePrint } from "@/lib/claude";
 interface AuditRequestBody {
   url: string;
   prdContext?: string;
+  repoContext?: string;
   cookies?: Cookie[];
 }
 
@@ -122,7 +123,7 @@ export async function POST(request: NextRequest) {
       const sse = createSSEWriter(controller);
 
       try {
-        await runAudit(body.url, sse, body.prdContext, body.cookies);
+        await runAudit(body.url, sse, body.prdContext, body.repoContext, body.cookies);
       } catch (err) {
         sse.sendError((err as Error).message);
       } finally {
@@ -146,7 +147,7 @@ export async function POST(request: NextRequest) {
 
 const VIEWPORT_NAMES: ViewportName[] = Object.keys(VIEWPORTS) as ViewportName[];
 
-async function runAudit(url: string, sse: SSEWriter, prdContext?: string, cookies?: Cookie[]): Promise<void> {
+async function runAudit(url: string, sse: SSEWriter, prdContext?: string, repoContext?: string, cookies?: Cookie[]): Promise<void> {
   // --- Step 1: Crawl and screenshot ----------------------------------------
   sse.sendProgress("Crawling site and discovering pages...");
 
@@ -188,6 +189,10 @@ async function runAudit(url: string, sse: SSEWriter, prdContext?: string, cookie
 
     if (prdContext) {
       prompt += `PROJECT CONTEXT:\n${prdContext}\n\nUse the project context above to evaluate the UI against actual product requirements and goals. Flag issues where the implementation diverges from stated requirements. Reference PRD requirements in acceptance_criteria where applicable.\n\n---\n\n`;
+    }
+
+    if (repoContext) {
+      prompt += `REPOSITORY CONTEXT:\nThe following files were extracted from the project's GitHub repository. Use them to understand the design system, tech stack, component patterns, and project conventions. Reference specific design tokens, component names, or config values in your recommendations where relevant.\n\n${repoContext}\n\n---\n\n`;
     }
 
     prompt += fs.readFileSync(promptFile, "utf-8");

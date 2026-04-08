@@ -37,6 +37,7 @@ import {
   Cookie,
   Camera,
   Trash2,
+  GitBranch,
 } from "lucide-react";
 import type { ViewportName } from "@/lib/crawler";
 import type { UXIssue } from "@/lib/analyzer";
@@ -103,7 +104,7 @@ interface UploadedScreenshot {
 function toAuditIssue(issue: UXIssue): AuditIssue {
   return {
     ...issue,
-    heuristic: issue.category,
+    heuristic: issue.principle || issue.category,
     assignee: "",
     status: "pending",
     editPromptOpen: false,
@@ -853,6 +854,14 @@ export default function DashboardPage() {
   const [prdFileName, setPrdFileName] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // GitHub repo context state
+  const [repoOpen, setRepoOpen] = useState(false);
+  const [repoUrl, setRepoUrl] = useState("");
+  const [repoContext, setRepoContext] = useState("");
+  const [repoLoading, setRepoLoading] = useState(false);
+  const [repoError, setRepoError] = useState<string | null>(null);
+  const [repoFileCount, setRepoFileCount] = useState(0);
+
   useEffect(() => {
     fetch("/api/stitch/setup")
       .then((res) => res.json())
@@ -923,6 +932,48 @@ export default function DashboardPage() {
   );
 
   // -----------------------------------------------------------------------
+  // GitHub repo context handler
+  // -----------------------------------------------------------------------
+
+  const handleFetchRepoContext = useCallback(async () => {
+    if (!repoUrl.trim()) return;
+    setRepoLoading(true);
+    setRepoError(null);
+    setRepoContext("");
+    setRepoFileCount(0);
+
+    try {
+      const res = await fetch("/api/fetch-repo-context", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repoUrl }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setRepoError(data.error ?? "Failed to fetch repository");
+        return;
+      }
+
+      // Build context string from fetched files
+      const files = data.files as { path: string; content: string }[];
+      setRepoFileCount(files.length);
+      if (files.length === 0) {
+        setRepoError("No relevant files found in this repository.");
+        return;
+      }
+
+      const context = files
+        .map((f) => `--- ${f.path} ---\n${f.content}`)
+        .join("\n\n");
+      setRepoContext(context);
+    } catch (err) {
+      setRepoError((err as Error).message);
+    } finally {
+      setRepoLoading(false);
+    }
+  }, [repoUrl]);
+
+  // -----------------------------------------------------------------------
   // Audit handler
   // -----------------------------------------------------------------------
 
@@ -983,6 +1034,7 @@ export default function DashboardPage() {
         body: JSON.stringify({
           url,
           prdContext: prdText || undefined,
+          repoContext: repoContext || undefined,
           ...(cookies && { cookies }),
         }),
       });
@@ -1097,7 +1149,7 @@ export default function DashboardPage() {
       setAuditError((err as Error).message);
       setPhase("idle");
     }
-  }, [url, prdText, cookieText, parseCookieText]);
+  }, [url, prdText, repoContext, cookieText, parseCookieText]);
 
   // -----------------------------------------------------------------------
   // Interactive login handlers
@@ -1223,6 +1275,9 @@ export default function DashboardPage() {
       if (prdText) {
         formData.append("prdContext", prdText);
       }
+      if (repoContext) {
+        formData.append("repoContext", repoContext);
+      }
 
       const res = await fetch("/api/audit-screenshots", {
         method: "POST",
@@ -1322,7 +1377,7 @@ export default function DashboardPage() {
       setAuditError((err as Error).message);
       setPhase("idle");
     }
-  }, [uploadedScreenshots, prdText]);
+  }, [uploadedScreenshots, prdText, repoContext]);
 
   // -----------------------------------------------------------------------
   // Issue update handler
@@ -1381,6 +1436,7 @@ export default function DashboardPage() {
             },
             instruction,
             ...(prdCtx ? { prdContext: prdCtx } : {}),
+            ...(repoContext ? { repoContext } : {}),
           }),
         });
 
@@ -1396,6 +1452,7 @@ export default function DashboardPage() {
           title: rewritten.title,
           severity: rewritten.severity,
           category: rewritten.category,
+          heuristic: rewritten.principle || rewritten.category,
           description: rewritten.description,
           affected_element: rewritten.affected_element,
           steps_to_reproduce: rewritten.steps_to_reproduce,
@@ -1419,7 +1476,7 @@ export default function DashboardPage() {
         alert(`Rewrite failed: ${(err as Error).message}`);
       }
     },
-    [pages, handleUpdateIssue]
+    [pages, handleUpdateIssue, repoContext]
   );
 
   // -----------------------------------------------------------------------
@@ -1607,6 +1664,7 @@ export default function DashboardPage() {
             description: i.description,
             severity: i.severity,
             category: i.category,
+            principle: i.heuristic,
             affected_element: i.affected_element,
             steps_to_reproduce: i.steps_to_reproduce,
             suggested_fix: i.suggested_fix,
@@ -1781,6 +1839,96 @@ export default function DashboardPage() {
                     className="min-h-[100px] text-sm font-mono"
                   />
                 </div>
+              </div>
+            )}
+          </div>
+
+          {/* Optional: GitHub Repository Context */}
+          <div className="border border-border rounded-lg overflow-hidden">
+            <button
+              onClick={() => setRepoOpen(!repoOpen)}
+              className="w-full flex items-center justify-between px-4 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+            >
+              <span className="flex items-center gap-2">
+                <GitBranch className="w-4 h-4" />
+                Repository Context (GitHub)
+                {repoContext && (
+                  <Badge variant="secondary" className="text-[10px]">
+                    {repoFileCount} file{repoFileCount !== 1 ? "s" : ""} loaded
+                  </Badge>
+                )}
+              </span>
+              {repoOpen ? (
+                <ChevronDown className="w-4 h-4" />
+              ) : (
+                <ChevronRight className="w-4 h-4" />
+              )}
+            </button>
+            {repoOpen && (
+              <div className="px-4 pb-4 space-y-3 border-t border-border animate-in fade-in slide-in-from-top-1 duration-200">
+                <p className="text-xs text-muted-foreground pt-3">
+                  Provide a GitHub repo URL to extract design system, project
+                  config, and CLAUDE.md for more targeted analysis.
+                </p>
+                <div className="flex items-center gap-2">
+                  <div className="relative flex-1">
+                    <GitBranch className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                    <Input
+                      type="url"
+                      placeholder="https://github.com/owner/repo"
+                      value={repoUrl}
+                      onChange={(e) => {
+                        setRepoUrl(e.target.value);
+                        setRepoError(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") handleFetchRepoContext();
+                      }}
+                      className="pl-9 h-9 text-sm"
+                    />
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleFetchRepoContext}
+                    disabled={!repoUrl.trim() || repoLoading}
+                  >
+                    {repoLoading ? (
+                      <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
+                    )}
+                    {repoLoading ? "Fetching..." : "Fetch"}
+                  </Button>
+                </div>
+                {repoError && (
+                  <p className="text-xs text-red-500 flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3" />
+                    {repoError}
+                  </p>
+                )}
+                {repoContext && (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-green-600">
+                        Loaded {repoFileCount} file{repoFileCount !== 1 ? "s" : ""} from repo
+                      </span>
+                      <button
+                        onClick={() => {
+                          setRepoContext("");
+                          setRepoUrl("");
+                          setRepoFileCount(0);
+                        }}
+                        className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                    <pre className="text-xs bg-muted/50 rounded p-2 max-h-[120px] overflow-auto font-mono text-muted-foreground whitespace-pre-wrap">
+                      {repoContext.slice(0, 500)}{repoContext.length > 500 ? "\n..." : ""}
+                    </pre>
+                  </div>
+                )}
               </div>
             )}
           </div>

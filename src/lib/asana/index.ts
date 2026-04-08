@@ -27,6 +27,7 @@ export interface UXIssue {
   description: string;
   severity: Severity;
   category: string;
+  principle?: string;
   affected_element: string;
   steps_to_reproduce: string;
   suggested_fix: string;
@@ -159,6 +160,10 @@ function formatTaskHtmlNotes(issue: UXIssue): string {
   const emoji = SEVERITY_EMOJI[issue.severity];
   const viewports = issue.affected_viewports.join(", ");
 
+  const principleSection = issue.principle
+    ? `\n<p>Principle: <strong>${escapeHtml(issue.principle)}</strong></p>`
+    : "";
+
   return [
     "<body>",
     `<h2>Issue Description</h2>`,
@@ -167,6 +172,7 @@ function formatTaskHtmlNotes(issue: UXIssue): string {
     `<h2>Severity &amp; Category</h2>`,
     `<p>${emoji} <strong>${escapeHtml(issue.severity)}</strong> (Priority: ${escapeHtml(priority)}) · Category: <strong>${escapeHtml(issue.category)}</strong></p>`,
     `<p>Affected viewports: <strong>${escapeHtml(viewports)}</strong></p>`,
+    principleSection,
     "",
     `<h2>Affected Element</h2>`,
     `<p><code>${escapeHtml(issue.affected_element)}</code></p>`,

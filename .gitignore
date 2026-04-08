@@ -37,3 +37,6 @@ next-env.d.ts
 
 # crawler output
 /screenshots
+
+# agent skills (reinstall via npx skills add)
+/.agents

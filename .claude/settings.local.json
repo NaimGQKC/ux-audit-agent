@@ -18,7 +18,10 @@
       "Bash(npx tsc:*)",
       "Bash(npx playwright:*)",
       "Bash(npx tsx:*)",
-      "Bash(chmod:*)"
+      "Bash(chmod:*)",
+      "Bash(find /c/Users/Naim/projects/ux-audit-agent/src -type f \\\\\\(-name *.ts -o -name *.tsx -o -name *.js -o -name *.jsx \\\\\\))",
+      "Bash(node:*)",
+      "Bash(npm uninstall:*)"
     ]
   }
 }

@@ -19,6 +19,7 @@ export interface UXIssue {
   title: string;
   severity: "critical" | "major" | "minor";
   category: "accessibility" | "usability" | "visual" | "responsive";
+  principle: string;
   description: string;
   affected_element: string;
   steps_to_reproduce: string;
@@ -68,6 +69,9 @@ export function validateAnalysisResult(data: unknown): AnalysisResult {
     if (!VALID_CATEGORIES.has(item.category as string)) {
       throw new Error(`Issue ${i}: invalid category "${item.category}"`);
     }
+    // principle is optional for backwards compatibility — default to category
+    const principle = typeof item.principle === "string" ? item.principle : (item.category as string);
+
     if (typeof item.description !== "string") {
       throw new Error(`Issue ${i}: missing or invalid "description"`);
     }
@@ -113,6 +117,7 @@ export function validateAnalysisResult(data: unknown): AnalysisResult {
       title: item.title,
       severity: item.severity as UXIssue["severity"],
       category: item.category as UXIssue["category"],
+      principle,
       description: item.description,
       affected_element: item.affected_element,
       steps_to_reproduce: item.steps_to_reproduce,

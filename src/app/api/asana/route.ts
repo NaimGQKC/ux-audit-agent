@@ -14,6 +14,7 @@ interface IssuePayload {
   description: string;
   severity: "critical" | "major" | "minor";
   category: string;
+  principle?: string;
   affected_element: string;
   steps_to_reproduce: string;
   suggested_fix: string;
@@ -83,6 +84,7 @@ export async function POST(request: NextRequest) {
     description: issue.description,
     severity: issue.severity,
     category: issue.category,
+    ...(issue.principle ? { principle: issue.principle } : {}),
     affected_element: issue.affected_element,
     steps_to_reproduce: issue.steps_to_reproduce,
     suggested_fix: issue.suggested_fix,

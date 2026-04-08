@@ -11,6 +11,7 @@ interface RewriteRequestBody {
   issue: UXIssue;
   instruction: string;
   prdContext?: string;
+  repoContext?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -68,6 +69,7 @@ function validateRewrittenIssue(data: unknown, originalId: string): UXIssue {
     title: o.title,
     severity: o.severity,
     category: o.category,
+    principle: typeof o.principle === "string" ? o.principle : o.category,
     description: o.description,
     affected_element: o.affected_element,
     steps_to_reproduce: o.steps_to_reproduce,
@@ -128,6 +130,10 @@ export async function POST(request: NextRequest) {
 
   if (body.prdContext) {
     prompt += `\n\n## Product requirements context\n${body.prdContext}`;
+  }
+
+  if (body.repoContext) {
+    prompt += `\n\n## Repository context\nThe following files are from the project's GitHub repository. Reference design tokens, component names, or config values in your recommendations where relevant.\n\n${body.repoContext}`;
   }
 
   // Call Claude CLI
