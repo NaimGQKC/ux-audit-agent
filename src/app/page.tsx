@@ -23,6 +23,13 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-background font-[family-name:var(--font-geist-sans)]">
+      {/* Skip to main content — WCAG 2.4.1 */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-[100] focus:px-4 focus:py-2 focus:bg-foreground focus:text-background focus:rounded-md"
+      >
+        Skip to main content
+      </a>
       {/* ================================================================ */}
       {/* HEADER — URL input + config panels + progress                    */}
       {/* ================================================================ */}
@@ -95,12 +102,13 @@ export default function DashboardPage() {
 
           {/* Error banner */}
           {audit.auditError && (
-            <div className="flex items-center gap-2 px-4 py-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
-              <AlertTriangle className="w-4 h-4 shrink-0" />
+            <div role="alert" className="flex items-center gap-2 px-4 py-3 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-300">
+              <AlertTriangle className="w-4 h-4 shrink-0" aria-hidden="true" />
               <span>Audit failed: {audit.auditError}</span>
               <button
                 onClick={() => audit.setAuditError(null)}
-                className="ml-auto text-red-500 hover:text-red-700"
+                aria-label="Dismiss error"
+                className="ml-auto text-red-700 hover:text-red-900 dark:text-red-300 dark:hover:text-red-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -144,7 +152,7 @@ export default function DashboardPage() {
       {/* ================================================================ */}
       {/* MAIN — page-by-page review                                       */}
       {/* ================================================================ */}
-      <main className="max-w-7xl mx-auto px-6 py-8 space-y-12">
+      <main id="main-content" className="max-w-7xl mx-auto px-6 py-8 space-y-12">
         {/* Empty state */}
         {audit.phase === "idle" && (
           <div className="text-center py-24 space-y-4">

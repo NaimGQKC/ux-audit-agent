@@ -47,6 +47,19 @@ export interface ClaudeOptions {
 }
 
 /**
+ * Quick health check: verify the Claude CLI is reachable and responding.
+ * Runs `claude -p` with a trivial prompt and a short timeout.
+ */
+export async function checkClaudeHealth(): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await execClaude("Respond with exactly: ok", 15_000, "healthcheck");
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
+}
+
+/**
  * Run `claude -p` (print mode), piping the given prompt via stdin.
  * Returns the raw stdout output.
  *

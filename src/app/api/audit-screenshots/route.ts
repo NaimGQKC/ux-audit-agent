@@ -147,7 +147,7 @@ async function runScreenshotAudit(
 ): Promise<void> {
   sse.sendProgress(`Processing ${images.length} uploaded screenshot(s)...`);
 
-  const sessionId = `ux-audit-upload-${Date.now()}`;
+  const sessionId = `ux-audit-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const outputDir = path.join(os.tmpdir(), sessionId);
   fs.mkdirSync(outputDir, { recursive: true });
 
@@ -210,7 +210,12 @@ async function runScreenshotAudit(
 
     try {
       const raw = await runClaudePrint(prompt, { label: `upload-batch-${batchIdx + 1}` });
-      const jsonText = raw.trim().replace(/^```(?:json)?\s*\n?/, "").replace(/\n?\s*```\s*$/, "");
+      let jsonText = raw.trim().replace(/^```(?:json)?\s*\n?/, "").replace(/\n?\s*```\s*$/, "");
+      // Strip leading/trailing non-JSON text
+      const jsonStart = jsonText.search(/\{/);
+      if (jsonStart > 0) jsonText = jsonText.slice(jsonStart);
+      const lastBrace = jsonText.lastIndexOf("}");
+      if (lastBrace >= 0 && lastBrace < jsonText.length - 1) jsonText = jsonText.slice(0, lastBrace + 1);
       const data = JSON.parse(jsonText) as { screenshots?: Record<string, unknown> };
       if (data.screenshots && typeof data.screenshots === "object") {
         Object.assign(mergedScreenshots, data.screenshots);

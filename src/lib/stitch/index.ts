@@ -35,7 +35,18 @@ function parseJSON<T>(raw: string): T {
   if (fenceMatch) {
     cleaned = fenceMatch[1].trim();
   }
-  return JSON.parse(cleaned) as T;
+  // Also strip any leading non-JSON text (e.g. "Here is the result:")
+  const jsonStart = cleaned.search(/[{\[]/);
+  if (jsonStart > 0) {
+    cleaned = cleaned.slice(jsonStart);
+  }
+  try {
+    return JSON.parse(cleaned) as T;
+  } catch (err) {
+    throw new Error(
+      `[stitch] Failed to parse JSON: ${(err as Error).message}\nRaw response (first 500 chars): ${raw.slice(0, 500)}`
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

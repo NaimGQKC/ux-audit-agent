@@ -147,17 +147,22 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Parse JSON response (strip code fences if present)
-  const jsonText = rawOutput
+  // Parse JSON response (strip code fences and any surrounding text)
+  let jsonText = rawOutput.trim()
     .replace(/^```(?:json)?\s*\n?/, "")
     .replace(/\n?\s*```\s*$/, "");
+  const jsonStart = jsonText.search(/\{/);
+  if (jsonStart > 0) jsonText = jsonText.slice(jsonStart);
+  const lastBrace = jsonText.lastIndexOf("}");
+  if (lastBrace >= 0 && lastBrace < jsonText.length - 1) jsonText = jsonText.slice(0, lastBrace + 1);
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(jsonText);
   } catch {
+    console.error("[rewrite] Claude returned invalid JSON:", rawOutput.slice(0, 500));
     return NextResponse.json(
-      { error: "Claude returned invalid JSON", raw: rawOutput },
+      { error: "Claude returned invalid JSON. Please try again." },
       { status: 502 }
     );
   }
@@ -166,8 +171,9 @@ export async function POST(request: NextRequest) {
   try {
     rewritten = validateRewrittenIssue(parsed, body.issue.id);
   } catch (err) {
+    console.error("[rewrite] Validation failed:", (err as Error).message);
     return NextResponse.json(
-      { error: (err as Error).message, raw: parsed },
+      { error: `Rewrite validation failed: ${(err as Error).message}` },
       { status: 502 }
     );
   }

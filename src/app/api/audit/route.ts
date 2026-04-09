@@ -14,7 +14,7 @@ import {
   waitForReadySignal,
 } from "@/lib/crawler";
 import { validateAnalysisResult, type UXIssue } from "@/lib/analyzer";
-import { runClaudePrint } from "@/lib/claude";
+import { runClaudePrint, checkClaudeHealth } from "@/lib/claude";
 import { saveAuditToCache } from "@/lib/cache";
 
 // ---------------------------------------------------------------------------
@@ -101,7 +101,22 @@ function createSSEWriter(controller: ReadableStreamDefaultController<Uint8Array>
 function isValidUrl(input: string): boolean {
   try {
     const url = new URL(input);
-    return url.protocol === "http:" || url.protocol === "https:";
+    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    // Block private/internal IPs to prevent SSRF
+    const hostname = url.hostname.toLowerCase();
+    if (
+      hostname === "localhost" ||
+      hostname === "[::1]" ||
+      hostname.startsWith("127.") ||
+      hostname.startsWith("10.") ||
+      hostname.startsWith("192.168.") ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(hostname) ||
+      hostname.startsWith("169.254.") ||
+      hostname.endsWith(".local")
+    ) {
+      return false;
+    }
+    return true;
   } catch {
     return false;
   }
@@ -117,6 +132,7 @@ function screenshotUrl(sessionId: string, filename: string): string {
 // Route handler
 // ---------------------------------------------------------------------------
 
+export const dynamic = "force-dynamic";
 export const maxDuration = 300; // Allow up to 5 minutes for large sites
 
 export async function POST(request: NextRequest) {
@@ -147,12 +163,23 @@ export async function POST(request: NextRequest) {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const sse = createSSEWriter(controller);
+      const encoder = new TextEncoder();
+
+      // SSE heartbeat to prevent proxy/CDN idle disconnect
+      const heartbeat = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(": heartbeat\n\n"));
+        } catch {
+          clearInterval(heartbeat);
+        }
+      }, 15_000);
 
       try {
         await runAudit(body.url, sse, body.prdContext, body.repoContext, body.cookies, body.usePersistedSession, body.interactiveLogin);
       } catch (err) {
         sse.sendError((err as Error).message);
       } finally {
+        clearInterval(heartbeat);
         sse.close();
       }
     },
@@ -163,6 +190,7 @@ export async function POST(request: NextRequest) {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
     },
   });
 }
@@ -213,16 +241,32 @@ function buildAnalysisPrompt(
  * fences if present.
  */
 function parseAnalysisResponse(raw: string): Record<string, unknown> {
-  const jsonText = raw
-    .trim()
+  let jsonText = raw.trim();
+
+  // Strip markdown fences (handles ```json ... ``` and plain ``` ... ```)
+  jsonText = jsonText
     .replace(/^```(?:json)?\s*\n?/, "")
     .replace(/\n?\s*```\s*$/, "");
+
+  // Strip any leading non-JSON text (e.g. "Here is the analysis:")
+  const jsonStart = jsonText.search(/\{/);
+  if (jsonStart > 0) {
+    jsonText = jsonText.slice(jsonStart);
+  }
+
+  // Strip any trailing non-JSON text after the closing brace
+  const lastBrace = jsonText.lastIndexOf("}");
+  if (lastBrace >= 0 && lastBrace < jsonText.length - 1) {
+    jsonText = jsonText.slice(0, lastBrace + 1);
+  }
 
   let data: { screenshots?: Record<string, unknown> };
   try {
     data = JSON.parse(jsonText);
   } catch {
-    throw new Error("Failed to parse analysis results as JSON");
+    throw new Error(
+      `Failed to parse analysis results as JSON. First 300 chars: ${raw.slice(0, 300)}`
+    );
   }
 
   if (!data.screenshots || typeof data.screenshots !== "object") {
@@ -259,10 +303,20 @@ async function runAudit(
     cookies = loginCookies;
   }
 
+  // --- Pre-flight: verify Claude CLI is available ---------------------------
+  sse.sendProgress("Checking Claude CLI availability...");
+  const health = await checkClaudeHealth();
+  if (!health.ok) {
+    throw new Error(
+      `Claude CLI is not responding: ${health.error}. ` +
+      `Make sure the 'claude' command is in your PATH and your session is active.`
+    );
+  }
+
   // --- Step 1: Crawl and screenshot ----------------------------------------
   sse.sendProgress("Crawling site and discovering pages...");
 
-  const outputDir = path.join(os.tmpdir(), `ux-audit-${Date.now()}`);
+  const outputDir = path.join(os.tmpdir(), `ux-audit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   const outcome = await crawlAndScreenshot(url, outputDir, cookies, usePersistedSession);
 
   // --- Handle SSO redirect (persistent session detected origin mismatch) ---
@@ -362,6 +416,7 @@ async function analyzeAndEmit(
 
   // --- Analyze in batches --------------------------------------------------
   const mergedScreenshots: Record<string, unknown> = {};
+  let failedBatches = 0;
 
   if (pngs.length === 0) {
     // No screenshots — empty result
@@ -385,8 +440,20 @@ async function analyzeAndEmit(
       } catch (err) {
         const msg = (err as Error).message;
         sse.sendProgress(`Warning: batch ${batchIdx + 1}/${totalBatches} failed: ${msg}`);
+        failedBatches++;
       }
     }
+  }
+
+  // --- Check for total analysis failure ------------------------------------
+  if (pngs.length > 0 && failedBatches > 0) {
+    const totalBatches = Math.ceil(pngs.length / BATCH_SIZE);
+    if (failedBatches === totalBatches) {
+      throw new Error(
+        `All ${totalBatches} analysis batch(es) failed. Check that the Claude CLI is working (run: claude -p "hello").`
+      );
+    }
+    sse.sendProgress(`${failedBatches}/${totalBatches} batch(es) failed — partial results below.`);
   }
 
   // --- Map results to page/viewport structure ------------------------------

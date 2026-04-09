@@ -79,7 +79,13 @@ const SEVERITY_EMOJI: Record<Severity, string> = {
 };
 
 /** Delay between sequential task creations to avoid 429s (ms). */
-const RATE_LIMIT_DELAY = 350;
+const RATE_LIMIT_DELAY = 500;
+
+/** Max batch size to avoid Next.js request timeouts. */
+const MAX_BATCH_SIZE = 50;
+
+/** HTTP status codes that indicate auth failure (no point retrying). */
+const AUTH_FAILURE_CODES = [401, 403];
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -136,7 +142,9 @@ async function asanaRequest<T>(
     const msg =
       apiError.errors?.map((e) => e.message).join("; ") ??
       `HTTP ${res.status}`;
-    throw new Error(`Asana API error: ${msg}`);
+    const error = new Error(`Asana API error (${res.status}): ${msg}`);
+    (error as Error & { status: number }).status = res.status;
+    throw error;
   }
 
   return body as T;
@@ -242,23 +250,52 @@ export async function createTicket(issue: UXIssue): Promise<AsanaTaskResult> {
 export async function createMultipleTickets(
   issues: UXIssue[]
 ): Promise<AsanaBatchResult> {
+  if (issues.length > MAX_BATCH_SIZE) {
+    throw new Error(
+      `Batch too large (${issues.length} issues). Max is ${MAX_BATCH_SIZE} to avoid timeouts. ` +
+      `Split into smaller batches or filter by severity first.`
+    );
+  }
+
   const result: AsanaBatchResult = { created: [], failed: [] };
+  let delay = RATE_LIMIT_DELAY;
 
   for (let i = 0; i < issues.length; i++) {
     const issue = issues[i];
     try {
       const task = await createTicket(issue);
       result.created.push(task);
+      delay = RATE_LIMIT_DELAY; // reset backoff on success
     } catch (err) {
+      const status = (err as Error & { status?: number }).status;
+
+      // Early exit on auth failures — no point retrying the rest
+      if (status && AUTH_FAILURE_CODES.includes(status)) {
+        result.failed.push({ issue, error: (err as Error).message });
+        // Mark all remaining issues as failed
+        for (let j = i + 1; j < issues.length; j++) {
+          result.failed.push({
+            issue: issues[j],
+            error: `Skipped — auth failure on prior request (HTTP ${status})`,
+          });
+        }
+        break;
+      }
+
       result.failed.push({
         issue,
         error: (err as Error).message,
       });
+
+      // Exponential backoff on rate limit (429)
+      if (status === 429) {
+        delay = Math.min(delay * 2, 5000);
+      }
     }
 
     // Delay between requests (skip after the last one)
     if (i < issues.length - 1) {
-      await new Promise((resolve) => setTimeout(resolve, RATE_LIMIT_DELAY));
+      await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
 

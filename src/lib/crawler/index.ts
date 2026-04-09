@@ -68,6 +68,8 @@ export type { Cookie };
 
 const PAGE_TIMEOUT = 30_000;
 const SETTLE_DELAY = 500;
+const MAX_ROUTES = 30;
+const MAX_SCREENSHOT_HEIGHT = 8000;
 
 /**
  * Turn a pathname into a filesystem-safe slug.
@@ -261,9 +263,10 @@ export async function crawlAndScreenshot(
 
     try {
       await discoveryPage.goto(url, {
-        waitUntil: "networkidle",
+        waitUntil: "domcontentloaded",
         timeout: PAGE_TIMEOUT,
       });
+      await discoveryPage.waitForLoadState("load", { timeout: 10_000 }).catch(() => {});
     } catch (err) {
       console.error(`Failed to load base URL ${url}: ${(err as Error).message}`);
       throw err;
@@ -287,9 +290,15 @@ export async function crawlAndScreenshot(
 
     // Ensure the base route is included and comes first
     const baseRoute = baseUrl.pathname.replace(/\/+$/, "") || "/";
-    const routes = [baseRoute, ...discoveredRoutes.filter((r) => r !== baseRoute)];
+    const allRoutes = [baseRoute, ...discoveredRoutes.filter((r) => r !== baseRoute)];
 
-    console.log(`Discovered ${routes.length} route(s):`);
+    // Limit routes to prevent timeout on large sites
+    const routes = allRoutes.slice(0, MAX_ROUTES);
+    if (allRoutes.length > MAX_ROUTES) {
+      console.log(`Discovered ${allRoutes.length} route(s), limiting to first ${MAX_ROUTES}`);
+    } else {
+      console.log(`Discovered ${routes.length} route(s):`);
+    }
     routes.forEach((r) => console.log(`  ${r}`));
 
     // --- Step 2: Create one context + page per viewport (reused across routes)
@@ -318,16 +327,27 @@ export async function crawlAndScreenshot(
           const { page } = vpState[vpName];
           try {
             await page.goto(fullUrl, {
-              waitUntil: "networkidle",
+              waitUntil: "domcontentloaded",
               timeout: PAGE_TIMEOUT,
             });
+            // Wait for load state and fonts, but don't block on networkidle
+            await page.waitForLoadState("load", { timeout: 10_000 }).catch(() => {});
+            await page.evaluate(() => document.fonts.ready).catch(() => {});
             await page.waitForTimeout(SETTLE_DELAY);
 
+            // Cap screenshot height to prevent memory issues
+            const bodyHeight = await page.evaluate(() => document.body.scrollHeight).catch(() => 0);
             const filename = `${slug}_${vpName}.png`;
-            await page.screenshot({
+            const screenshotOpts: { path: string; fullPage?: boolean; clip?: { x: number; y: number; width: number; height: number } } = {
               path: path.join(outputDir, filename),
-              fullPage: true,
-            });
+            };
+            if (bodyHeight > MAX_SCREENSHOT_HEIGHT) {
+              const vpSize = VIEWPORTS[vpName];
+              screenshotOpts.clip = { x: 0, y: 0, width: vpSize.width, height: MAX_SCREENSHOT_HEIGHT };
+            } else {
+              screenshotOpts.fullPage = true;
+            }
+            await page.screenshot(screenshotOpts);
 
             console.log(`  ✓ ${route} @ ${vpName}`);
             return { vpName, filename };

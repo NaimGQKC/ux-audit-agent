@@ -30,6 +30,19 @@ import {
 import type { AuditPhase, UploadedScreenshot } from "@/types/audit";
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function isValidUrl(input: string): boolean {
+  try {
+    const u = new URL(input);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // AuditForm — URL input + all config panels
 // ---------------------------------------------------------------------------
 
@@ -153,16 +166,26 @@ export function AuditForm({
 
       {/* URL input */}
       <div className="flex items-center gap-3">
-        <div className="relative flex-1">
-          <Globe className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-          <Input
-            type="url"
-            placeholder="Enter a URL to audit (e.g. https://example.com)"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") onRunAudit(); }}
-            className="pl-9 h-11 text-sm"
-          />
+        <div className="relative flex-1 space-y-1">
+          <div className="relative">
+            <Globe className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" aria-hidden="true" />
+            <Input
+              id="audit-url"
+              type="url"
+              aria-label="Website URL to audit"
+              placeholder="Enter a URL to audit (e.g. https://example.com)"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") onRunAudit(); }}
+              className={`pl-9 h-11 text-sm ${url.trim() && !isValidUrl(url) ? "border-red-500 focus-visible:ring-red-500/50" : ""}`}
+            />
+          </div>
+          {url.trim() && !isValidUrl(url) && (
+            <p className="text-xs text-red-600 flex items-center gap-1" role="alert">
+              <AlertTriangle className="w-3 h-3" aria-hidden="true" />
+              URL must start with https:// or http://
+            </p>
+          )}
         </div>
         <Button
           onClick={onRunAudit}
@@ -195,7 +218,7 @@ export function AuditForm({
             Use my browser session
           </span>
           {hasPersistedSession && (
-            <Badge variant="secondary" className="text-[10px] text-green-600 border-green-200 bg-green-50">
+            <Badge variant="secondary" className="text-[10px] text-green-700 border-green-300 bg-green-50">
               session saved
             </Badge>
           )}
@@ -220,7 +243,7 @@ export function AuditForm({
               <Button
                 size="sm"
                 variant="outline"
-                className="text-red-500 border-red-200 hover:bg-red-50"
+                className="text-red-700 border-red-300 hover:bg-red-100"
                 onClick={onClearSession}
               >
                 <Trash className="w-3.5 h-3.5 mr-1.5" />
@@ -548,7 +571,8 @@ function CollapsiblePanel({
     <div className="border border-border rounded-lg overflow-hidden">
       <button
         onClick={onToggle}
-        className="w-full flex items-center justify-between px-4 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+        aria-expanded={open}
+        className="w-full flex items-center justify-between px-4 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
       >
         <span className="flex items-center gap-2">
           {icon}
@@ -559,7 +583,7 @@ function CollapsiblePanel({
             </Badge>
           )}
         </span>
-        {open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+        {open ? <ChevronDown className="w-4 h-4" aria-hidden="true" /> : <ChevronRight className="w-4 h-4" aria-hidden="true" />}
       </button>
       {open && (
         <div className="px-4 pb-4 space-y-3 border-t border-border animate-in fade-in slide-in-from-top-1 duration-200">
