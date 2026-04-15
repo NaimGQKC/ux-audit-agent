@@ -50,6 +50,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Missing url" }, { status: 400 });
     }
 
+    // Validate URL is http(s) — prevent launching browser to arbitrary protocols
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        return NextResponse.json({ error: "URL must use http or https protocol" }, { status: 400 });
+      }
+    } catch {
+      return NextResponse.json({ error: "Invalid URL" }, { status: 400 });
+    }
+
     try {
       const { sessionId } = await launchHeadedPersistentBrowser(url);
       return NextResponse.json({ sessionId });

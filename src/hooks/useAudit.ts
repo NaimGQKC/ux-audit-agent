@@ -299,7 +299,10 @@ export function useAudit() {
     });
   }
 
-  async function processSSEStream(
+  // Wrapped in useCallback so handleRunAudit/handleAnalyzeScreenshots
+  // can list it as a dependency without triggering re-renders.
+  // All state setters used inside are stable React references.
+  const processSSEStream = useCallback(async function processSSEStream(
     reader: ReadableStreamDefaultReader<Uint8Array>,
     opts?: { onAuthRequired?: (authUrl: string, screenshot: string) => void },
   ) {
@@ -324,17 +327,25 @@ export function useAudit() {
           currentData = line.slice(6);
         } else if (line === "") {
           if (currentEvent && currentData) {
-            const parsed = JSON.parse(currentData);
+            let parsed: Record<string, unknown>;
+            try {
+              parsed = JSON.parse(currentData);
+            } catch {
+              // Malformed SSE data — skip this event and continue
+              currentEvent = "";
+              currentData = "";
+              continue;
+            }
 
             if (currentEvent === "auth_required") {
-              opts?.onAuthRequired?.(parsed.authUrl, parsed.screenshot);
+              opts?.onAuthRequired?.(parsed.authUrl as string, parsed.screenshot as string);
               return; // Stop processing
             } else if (currentEvent === "interactive_login_ready") {
               // Headed browser is open — show "I'm logged in" button
               setPhase("interactive_login");
               setProgressDetail("Browser opened — log in, then click the button below.");
               setBrowserSession({
-                sessionId: parsed.sessionId,
+                sessionId: parsed.sessionId as string,
                 status: "ready",
               });
             } else if (currentEvent === "sso_redirect") {
@@ -342,21 +353,23 @@ export function useAudit() {
               setPhase("sso_redirect");
               setProgressDetail("SSO redirect detected — complete login in the browser.");
               setBrowserSession({
-                sessionId: parsed.sessionId,
+                sessionId: parsed.sessionId as string,
                 status: "sso_polling",
-                redirectUrl: parsed.redirectUrl,
+                redirectUrl: parsed.redirectUrl as string,
               });
             } else if (currentEvent === "progress") {
-              setProgressDetail(parsed.detail);
-              if (parsed.detail.includes("Crawling") || parsed.detail.includes("Resuming")) setPhase("crawling");
-              else if (parsed.detail.includes("Discovered")) setPhase("screenshotting");
-              else if (parsed.detail.includes("Analyz") || parsed.detail.includes("Reading")) setPhase("analyzing");
-              else if (parsed.detail.includes("complete")) setPhase("done");
-              else if (parsed.detail.includes("Login confirmed") || parsed.detail.includes("SSO login complete")) {
+              const detail = String(parsed.detail ?? "");
+              setProgressDetail(detail);
+              if (detail.includes("Crawling") || detail.includes("Resuming")) setPhase("crawling");
+              else if (detail.includes("Discovered")) setPhase("screenshotting");
+              else if (detail.includes("Analyz") || detail.includes("Reading")) setPhase("analyzing");
+              else if (detail.includes("complete")) setPhase("done");
+              else if (detail.includes("Login confirmed") || detail.includes("SSO login complete")) {
                 setBrowserSession({ sessionId: null, status: "idle" });
               }
             } else if (currentEvent === "result") {
-              const pageAudits = parseSSEResult(parsed);
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const pageAudits = parseSSEResult(parsed as any);
               setPages(pageAudits);
               const viewportMap: Record<string, ViewportName> = {};
               pageAudits.forEach((p) => { viewportMap[p.url] = "desktop"; });
@@ -370,7 +383,7 @@ export function useAudit() {
                 .catch(() => {});
             } else if (currentEvent === "error") {
               setBrowserSession({ sessionId: null, status: "idle" });
-              throw new Error(parsed.message);
+              throw new Error(String(parsed.message ?? "Unknown error"));
             }
           }
           currentEvent = "";
@@ -378,7 +391,7 @@ export function useAudit() {
         }
       }
     }
-  }
+  }, []);
 
   // -----------------------------------------------------------------------
   // Run audit (URL-based)
@@ -438,7 +451,7 @@ export function useAudit() {
         setPhase("idle");
       }
     },
-    [url, prdText, repoContext, cookieText, parseCookieText, usePersistedSession, interactiveLogin],
+    [url, prdText, repoContext, cookieText, parseCookieText, usePersistedSession, interactiveLogin, processSSEStream],
   );
 
   // -----------------------------------------------------------------------
@@ -590,7 +603,7 @@ export function useAudit() {
       setAuditError((err as Error).message);
       setPhase("idle");
     }
-  }, [uploadedScreenshots, prdText, repoContext]);
+  }, [uploadedScreenshots, prdText, repoContext, processSSEStream]);
 
   // -----------------------------------------------------------------------
   // Issue CRUD

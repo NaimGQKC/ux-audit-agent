@@ -66,10 +66,51 @@ export type CrawlOutcome = AuthRequiredResult | SSORedirectResult | CrawlResult;
 // Re-export Cookie type for consumers
 export type { Cookie };
 
-const PAGE_TIMEOUT = 30_000;
+/**
+ * Default per-page navigation timeout. Bumped from 30s to 45s in 2026-04
+ * after observing real-world JS-heavy SPAs (Stripe, Vercel) timing out at
+ * 30s on `domcontentloaded`. Override via `crawlAndScreenshot(..., { pageTimeout })`.
+ */
+const DEFAULT_PAGE_TIMEOUT = 45_000;
 const SETTLE_DELAY = 500;
 const MAX_ROUTES = 30;
 const MAX_SCREENSHOT_HEIGHT = 8000;
+
+export interface CrawlOptions {
+  /** Pre-injected cookies (interactive login, cookie import). */
+  cookies?: Cookie[];
+  /** Use the persistent browser profile (SSO passthrough). */
+  usePersistedSession?: boolean;
+  /** Per-page navigation timeout in ms. Default: 45_000. */
+  pageTimeout?: number;
+  /** Max routes to crawl. Default: 30. */
+  maxRoutes?: number;
+}
+
+/**
+ * Navigate with a graceful fallback: try `domcontentloaded` first; if that
+ * times out (heavy SPA), retry with `commit` (just the navigation request)
+ * which gives us a chance to screenshot the partially-rendered page rather
+ * than losing the viewport entirely.
+ */
+async function gotoWithFallback(
+  page: Page,
+  url: string,
+  pageTimeout: number,
+): Promise<void> {
+  try {
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: pageTimeout });
+  } catch (err) {
+    const msg = (err as Error).message;
+    // Only fall back on timeout — let other errors (DNS, cert, etc.) propagate.
+    if (!msg.includes("Timeout")) throw err;
+    console.warn(
+      `  ↻ ${url} — domcontentloaded timed out at ${Math.round(pageTimeout / 1000)}s, retrying with 'commit'`,
+    );
+    // Half timeout for the fallback — at this point we just want any screenshot.
+    await page.goto(url, { waitUntil: "commit", timeout: Math.round(pageTimeout / 2) });
+  }
+}
 
 /**
  * Turn a pathname into a filesystem-safe slug.
@@ -196,8 +237,11 @@ export async function crawlAndScreenshot(
   url: string,
   outputDir: string = path.resolve("screenshots"),
   cookies?: Cookie[],
-  usePersistedSession?: boolean
+  usePersistedSession?: boolean,
+  options: Pick<CrawlOptions, "pageTimeout" | "maxRoutes"> = {},
 ): Promise<CrawlOutcome> {
+  const pageTimeout = options.pageTimeout ?? DEFAULT_PAGE_TIMEOUT;
+  const maxRoutes = options.maxRoutes ?? MAX_ROUTES;
   const baseUrl = new URL(url);
   const origin = baseUrl.origin;
 
@@ -262,10 +306,7 @@ export async function crawlAndScreenshot(
     const discoveryPage = await discoveryCtx.newPage();
 
     try {
-      await discoveryPage.goto(url, {
-        waitUntil: "domcontentloaded",
-        timeout: PAGE_TIMEOUT,
-      });
+      await gotoWithFallback(discoveryPage, url, pageTimeout);
       await discoveryPage.waitForLoadState("load", { timeout: 10_000 }).catch(() => {});
     } catch (err) {
       console.error(`Failed to load base URL ${url}: ${(err as Error).message}`);
@@ -293,9 +334,9 @@ export async function crawlAndScreenshot(
     const allRoutes = [baseRoute, ...discoveredRoutes.filter((r) => r !== baseRoute)];
 
     // Limit routes to prevent timeout on large sites
-    const routes = allRoutes.slice(0, MAX_ROUTES);
-    if (allRoutes.length > MAX_ROUTES) {
-      console.log(`Discovered ${allRoutes.length} route(s), limiting to first ${MAX_ROUTES}`);
+    const routes = allRoutes.slice(0, maxRoutes);
+    if (allRoutes.length > maxRoutes) {
+      console.log(`Discovered ${allRoutes.length} route(s), limiting to first ${maxRoutes}`);
     } else {
       console.log(`Discovered ${routes.length} route(s):`);
     }
@@ -326,10 +367,7 @@ export async function crawlAndScreenshot(
         VIEWPORT_ENTRIES.map(async ([vpName]) => {
           const { page } = vpState[vpName];
           try {
-            await page.goto(fullUrl, {
-              waitUntil: "domcontentloaded",
-              timeout: PAGE_TIMEOUT,
-            });
+            await gotoWithFallback(page, fullUrl, pageTimeout);
             // Wait for load state and fonts, but don't block on networkidle
             await page.waitForLoadState("load", { timeout: 10_000 }).catch(() => {});
             await page.evaluate(() => document.fonts.ready).catch(() => {});

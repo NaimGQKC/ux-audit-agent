@@ -28,6 +28,17 @@ export async function POST(request: Request) {
       );
     }
 
+    // Validate hex colors
+    const hexPattern = /^#[0-9a-f]{6}$/i;
+    for (const [name, value] of Object.entries({ primaryColor, secondaryColor, accentColor })) {
+      if (!hexPattern.test(value)) {
+        return NextResponse.json(
+          { error: `Invalid ${name}: must be a 6-digit hex color (e.g. #2563eb)` },
+          { status: 400 },
+        );
+      }
+    }
+
     const tokens = fromBrandConfig({ primaryColor, secondaryColor, fontFamily, accentColor });
     const designSystem = await setupDesignSystem(projectId, tokens);
 

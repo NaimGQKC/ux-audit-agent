@@ -15,14 +15,14 @@ import { getCacheDir } from "@/lib/cache";
  * and the full path is always constructed server-side.
  */
 
-/** Session IDs produced by the crawler / upload routes. */
-const SESSION_PATTERN = /^ux-audit-(?:upload-)?\d+$/;
+/** Session IDs produced by the crawler / upload routes (includes random suffix). */
+const SESSION_PATTERN = /^ux-audit-(?:upload-)?\d+-[a-z0-9]+$/;
 
 /** Cache IDs: hostname-slug_hexhash */
 const CACHE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
-/** Only safe filenames: alphanumeric, hyphens, underscores, single dot before png. */
-const FILENAME_PATTERN = /^[a-zA-Z0-9_-]+\.png$/;
+/** Only safe filenames: alphanumeric, hyphens, underscores, single dot before extension. */
+const FILENAME_PATTERN = /^[a-zA-Z0-9_-]+\.(png|jpg|jpeg|webp)$/;
 
 export async function GET(request: NextRequest) {
   const sessionId = request.nextUrl.searchParams.get("s");
@@ -71,9 +71,16 @@ export async function GET(request: NextRequest) {
   }
 
   const buffer = fs.readFileSync(resolved);
+  const ext = path.extname(filename).toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+  };
   return new Response(buffer, {
     headers: {
-      "Content-Type": "image/png",
+      "Content-Type": mimeTypes[ext] || "image/png",
       "Cache-Control": "private, max-age=3600",
     },
   });

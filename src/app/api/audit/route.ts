@@ -1,5 +1,4 @@
 import { NextRequest } from "next/server";
-import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import {
@@ -14,7 +13,8 @@ import {
   waitForReadySignal,
 } from "@/lib/crawler";
 import { validateAnalysisResult, type UXIssue } from "@/lib/analyzer";
-import { runClaudePrint, checkClaudeHealth } from "@/lib/claude";
+import { analyzeScreenshotsDir } from "@/lib/analyzer/run";
+import { checkClaudeHealth } from "@/lib/claude";
 import { saveAuditToCache } from "@/lib/cache";
 
 // ---------------------------------------------------------------------------
@@ -201,81 +201,6 @@ export async function POST(request: NextRequest) {
 
 const VIEWPORT_NAMES: ViewportName[] = Object.keys(VIEWPORTS) as ViewportName[];
 
-/** Max screenshots per Claude call to stay within context limits. */
-const BATCH_SIZE = 6;
-
-/**
- * Build the analysis prompt for a batch of PNG files.
- */
-function buildAnalysisPrompt(
-  pngs: string[],
-  basePrompt: string,
-  prdContext?: string,
-  repoContext?: string,
-): string {
-  let prompt = "";
-
-  if (prdContext) {
-    prompt += `PROJECT CONTEXT:\n${prdContext}\n\nUse the project context above to evaluate the UI against actual product requirements and goals. Flag issues where the implementation diverges from stated requirements. Reference PRD requirements in acceptance_criteria where applicable.\n\n---\n\n`;
-  }
-
-  if (repoContext) {
-    prompt += `REPOSITORY CONTEXT:\nThe following files were extracted from the project's GitHub repository. Use them to understand the design system, tech stack, component patterns, and project conventions. Reference specific design tokens, component names, or config values in your recommendations where relevant.\n\n${repoContext}\n\n---\n\n`;
-  }
-
-  prompt += basePrompt;
-
-  prompt += `\n\n---\n\nAnalyze each of the following screenshot image files for UX and accessibility issues. Read each file listed below, then evaluate it against all the criteria described above.\n\nScreenshot files:\n`;
-  for (const png of pngs) {
-    prompt += `- ${png}\n`;
-  }
-
-  const exampleFile = path.basename(pngs[0]);
-  prompt += `\nReturn a single JSON object with results grouped by filename (basename only, not the full path). Each key should be the PNG filename, and each value should be an object with an "issues" array following the schema described above.\n\nExpected structure:\n{\n  "screenshots": {\n    "${exampleFile}": { "issues": [ ... ] }\n  }\n}\n\nOutput ONLY valid JSON. No markdown code fences, no explanatory text, no commentary — just the raw JSON object.\n`;
-
-  return prompt;
-}
-
-/**
- * Parse a raw Claude response into a screenshots record, stripping markdown
- * fences if present.
- */
-function parseAnalysisResponse(raw: string): Record<string, unknown> {
-  let jsonText = raw.trim();
-
-  // Strip markdown fences (handles ```json ... ``` and plain ``` ... ```)
-  jsonText = jsonText
-    .replace(/^```(?:json)?\s*\n?/, "")
-    .replace(/\n?\s*```\s*$/, "");
-
-  // Strip any leading non-JSON text (e.g. "Here is the analysis:")
-  const jsonStart = jsonText.search(/\{/);
-  if (jsonStart > 0) {
-    jsonText = jsonText.slice(jsonStart);
-  }
-
-  // Strip any trailing non-JSON text after the closing brace
-  const lastBrace = jsonText.lastIndexOf("}");
-  if (lastBrace >= 0 && lastBrace < jsonText.length - 1) {
-    jsonText = jsonText.slice(0, lastBrace + 1);
-  }
-
-  let data: { screenshots?: Record<string, unknown> };
-  try {
-    data = JSON.parse(jsonText);
-  } catch {
-    throw new Error(
-      `Failed to parse analysis results as JSON. First 300 chars: ${raw.slice(0, 300)}`
-    );
-  }
-
-  if (!data.screenshots || typeof data.screenshots !== "object") {
-    throw new Error("Invalid analysis results: missing 'screenshots' object");
-  }
-
-  return data.screenshots;
-}
-
 async function runAudit(
   url: string,
   sse: SSEWriter,
@@ -404,55 +329,29 @@ async function analyzeAndEmit(
 
   sse.sendProgress(`Discovered ${totalRoutes} page(s). Analyzing screenshots with Claude...`);
 
-  // --- Load prompt template ------------------------------------------------
-  const promptFile = path.join(process.cwd(), "src", "lib", "analyzer", "ux-analysis-prompt.txt");
-  if (!fs.existsSync(promptFile)) {
-    throw new Error(`Prompt file not found at ${promptFile}`);
-  }
-  const basePrompt = fs.readFileSync(promptFile, "utf-8");
-
-  // Collect PNG files
-  const pngs = fs.readdirSync(outputDir).filter((f) => f.endsWith(".png")).map((f) => path.join(outputDir, f));
-
-  // --- Analyze in batches --------------------------------------------------
-  const mergedScreenshots: Record<string, unknown> = {};
+  // --- Run batched analyzer (shared with smoke-test) -----------------------
+  let mergedScreenshots: Record<string, { issues: unknown[] }> = {};
+  let totalBatches = 0;
   let failedBatches = 0;
 
-  if (pngs.length === 0) {
-    // No screenshots — empty result
-  } else {
-    const totalBatches = Math.ceil(pngs.length / BATCH_SIZE);
-
-    for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
-      const batchPngs = pngs.slice(batchIdx * BATCH_SIZE, (batchIdx + 1) * BATCH_SIZE);
-      const batchLabel = totalBatches > 1
-        ? `Analyzing batch ${batchIdx + 1}/${totalBatches} (${batchPngs.length} screenshots)...`
-        : `Analyzing ${batchPngs.length} screenshot(s)...`;
-
-      sse.sendProgress(batchLabel, batchIdx, totalBatches);
-
-      const prompt = buildAnalysisPrompt(batchPngs, basePrompt, prdContext, repoContext);
-
-      try {
-        const raw = await runClaudePrint(prompt, { label: `audit-batch-${batchIdx + 1}` });
-        const batchResults = parseAnalysisResponse(raw);
-        Object.assign(mergedScreenshots, batchResults);
-      } catch (err) {
-        const msg = (err as Error).message;
-        sse.sendProgress(`Warning: batch ${batchIdx + 1}/${totalBatches} failed: ${msg}`);
-        failedBatches++;
-      }
+  try {
+    const result = await analyzeScreenshotsDir(outputDir, {
+      prdContext,
+      repoContext,
+      onProgress: (msg, current, total) => sse.sendProgress(msg, current, total),
+    });
+    mergedScreenshots = result.screenshots;
+    totalBatches = result.totalBatches;
+    failedBatches = result.failedBatches;
+    for (const e of result.errors) {
+      sse.sendProgress(`Warning: batch ${e.batchIndex + 1} failed: ${e.reason}`);
     }
+  } catch (err) {
+    // Only thrown when *every* batch failed — surface as fatal.
+    throw err;
   }
 
-  // --- Check for total analysis failure ------------------------------------
-  if (pngs.length > 0 && failedBatches > 0) {
-    const totalBatches = Math.ceil(pngs.length / BATCH_SIZE);
-    if (failedBatches === totalBatches) {
-      throw new Error(
-        `All ${totalBatches} analysis batch(es) failed. Check that the Claude CLI is working (run: claude -p "hello").`
-      );
-    }
+  if (totalBatches > 0 && failedBatches > 0) {
     sse.sendProgress(`${failedBatches}/${totalBatches} batch(es) failed — partial results below.`);
   }
 

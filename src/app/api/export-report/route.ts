@@ -71,7 +71,15 @@ function tryReadImageAsBase64(screenshotUrl: string): string {
 
     if (filepath && fs.existsSync(filepath)) {
       const buffer = fs.readFileSync(filepath);
-      return `data:image/png;base64,${buffer.toString("base64")}`;
+      const ext = path.extname(filepath).toLowerCase();
+      const mimeTypes: Record<string, string> = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+      };
+      const mime = mimeTypes[ext] || "image/png";
+      return `data:${mime};base64,${buffer.toString("base64")}`;
     }
   } catch {
     // Fall through

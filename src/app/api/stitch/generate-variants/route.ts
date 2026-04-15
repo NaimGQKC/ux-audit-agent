@@ -19,8 +19,16 @@ export async function POST(request: Request) {
       );
     }
 
-    // Clamp count to [1, 5], default 3
-    const count = Math.max(1, Math.min(5, rawCount ?? 3));
+    if (!Array.isArray(screenIds) || screenIds.length === 0 || !screenIds.every((id) => typeof id === "string")) {
+      return NextResponse.json(
+        { error: "screenIds must be a non-empty array of strings" },
+        { status: 400 }
+      );
+    }
+
+    // Clamp count to [1, 5], default 3. Guard against NaN.
+    const numericCount = typeof rawCount === "number" && !isNaN(rawCount) ? rawCount : 3;
+    const count = Math.max(1, Math.min(5, numericCount));
 
     const variants = await generateVariants({ projectId, screenIds, prompt, count });
 

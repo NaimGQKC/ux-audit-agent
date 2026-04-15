@@ -45,7 +45,13 @@ function validateIssues(issues: unknown): issues is IssuePayload[] {
       typeof item.description === "string" &&
       VALID_SEVERITIES.has(item.severity) &&
       typeof item.category === "string" &&
-      typeof item.recommendation === "string"
+      typeof item.recommendation === "string" &&
+      typeof item.affected_element === "string" &&
+      typeof item.steps_to_reproduce === "string" &&
+      typeof item.suggested_fix === "string" &&
+      typeof item.acceptance_criteria === "string" &&
+      Array.isArray(item.affected_viewports) &&
+      item.affected_viewports.length > 0
   );
 }
 

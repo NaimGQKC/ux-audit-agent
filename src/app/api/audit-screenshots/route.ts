@@ -3,12 +3,9 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { validateAnalysisResult, type UXIssue } from "@/lib/analyzer";
+import { analyzeScreenshotsDir } from "@/lib/analyzer/run";
 import { type ViewportName, VIEWPORTS } from "@/lib/crawler";
-import { runClaudePrint } from "@/lib/claude";
 import { saveAuditToCache } from "@/lib/cache";
-
-/** Max screenshots per Claude call to stay within context limits. */
-const BATCH_SIZE = 6;
 
 // ---------------------------------------------------------------------------
 // Types (same output format as /api/audit)
@@ -111,15 +108,35 @@ export async function POST(request: NextRequest) {
     });
   }
 
+  // Cap total upload size to 50 MB to prevent memory exhaustion
+  const totalBytes = images.reduce((acc, img) => acc + img.size, 0);
+  if (totalBytes > 50 * 1024 * 1024) {
+    return new Response(
+      JSON.stringify({ error: `Total upload size (${(totalBytes / 1024 / 1024).toFixed(1)} MB) exceeds 50 MB limit.` }),
+      { status: 400, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const sse = createSSEWriter(controller);
+      const encoder = new TextEncoder();
+
+      // SSE heartbeat to prevent proxy/CDN idle disconnect
+      const heartbeat = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(": heartbeat\n\n"));
+        } catch {
+          clearInterval(heartbeat);
+        }
+      }, 15_000);
 
       try {
         await runScreenshotAudit(images, labels, sse, prdContext || undefined, repoContext || undefined);
       } catch (err) {
         sse.sendError((err as Error).message);
       } finally {
+        clearInterval(heartbeat);
         sse.close();
       }
     },
@@ -130,6 +147,7 @@ export async function POST(request: NextRequest) {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
     },
   });
 }
@@ -173,60 +191,20 @@ async function runScreenshotAudit(
 
   sse.sendProgress(`Saved ${savedFiles.length} screenshot(s). Analyzing with Claude...`);
 
-  // Load prompt template
-  const promptFile = path.join(process.cwd(), "src", "lib", "analyzer", "ux-analysis-prompt.txt");
-  if (!fs.existsSync(promptFile)) {
-    throw new Error(`Prompt file not found at ${promptFile}`);
-  }
-  const basePrompt = fs.readFileSync(promptFile, "utf-8");
+  // Use the shared batched analyzer — same implementation the /api/audit route uses,
+  // including JSON truncation repair and bounded-concurrency batching.
+  const analyzeResult = await analyzeScreenshotsDir(outputDir, {
+    prdContext,
+    repoContext,
+    onProgress: (msg, current, total) => sse.sendProgress(msg, current, total),
+  });
 
-  // Analyze in batches of BATCH_SIZE
-  const allFilepaths = savedFiles.map((sf) => sf.filepath);
-  const totalBatches = Math.ceil(allFilepaths.length / BATCH_SIZE);
-  const mergedScreenshots: Record<string, unknown> = {};
-
-  for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
-    const batchFiles = allFilepaths.slice(batchIdx * BATCH_SIZE, (batchIdx + 1) * BATCH_SIZE);
-    const batchLabel = totalBatches > 1
-      ? `Analyzing batch ${batchIdx + 1}/${totalBatches} (${batchFiles.length} screenshots)...`
-      : `Analyzing ${batchFiles.length} screenshot(s)...`;
-
-    sse.sendProgress(batchLabel, batchIdx, totalBatches);
-
-    let prompt = "";
-    if (prdContext) {
-      prompt += `PROJECT CONTEXT:\n${prdContext}\n\nUse the project context above to evaluate the UI against actual product requirements and goals. Flag issues where the implementation diverges from stated requirements. Reference PRD requirements in acceptance_criteria where applicable.\n\n---\n\n`;
-    }
-    if (repoContext) {
-      prompt += `REPOSITORY CONTEXT:\nThe following files were extracted from the project's GitHub repository. Use them to understand the design system, tech stack, component patterns, and project conventions. Reference specific design tokens, component names, or config values in your recommendations where relevant.\n\n${repoContext}\n\n---\n\n`;
-    }
-    prompt += basePrompt;
-    prompt += `\n\n---\n\nAnalyze each of the following screenshot image files for UX and accessibility issues. Read each file listed below, then evaluate it against all the criteria described above.\n\nScreenshot files:\n`;
-    for (const fp of batchFiles) {
-      prompt += `- ${fp}\n`;
-    }
-    const exampleFile = path.basename(batchFiles[0]);
-    prompt += `\nReturn a single JSON object with results grouped by filename (basename only, not the full path). Each key should be the PNG filename, and each value should be an object with an "issues" array following the schema described above.\n\nExpected structure:\n{\n  "screenshots": {\n    "${exampleFile}": { "issues": [ ... ] }\n  }\n}\n\nOutput ONLY valid JSON. No markdown code fences, no explanatory text, no commentary — just the raw JSON object.\n`;
-
-    try {
-      const raw = await runClaudePrint(prompt, { label: `upload-batch-${batchIdx + 1}` });
-      let jsonText = raw.trim().replace(/^```(?:json)?\s*\n?/, "").replace(/\n?\s*```\s*$/, "");
-      // Strip leading/trailing non-JSON text
-      const jsonStart = jsonText.search(/\{/);
-      if (jsonStart > 0) jsonText = jsonText.slice(jsonStart);
-      const lastBrace = jsonText.lastIndexOf("}");
-      if (lastBrace >= 0 && lastBrace < jsonText.length - 1) jsonText = jsonText.slice(0, lastBrace + 1);
-      const data = JSON.parse(jsonText) as { screenshots?: Record<string, unknown> };
-      if (data.screenshots && typeof data.screenshots === "object") {
-        Object.assign(mergedScreenshots, data.screenshots);
-      }
-    } catch (err) {
-      sse.sendProgress(`Warning: batch ${batchIdx + 1}/${totalBatches} failed: ${(err as Error).message}`);
-    }
+  for (const e of analyzeResult.errors) {
+    sse.sendProgress(`Warning: batch ${e.batchIndex + 1} failed: ${e.reason}`);
   }
 
   sse.sendProgress("Reading analysis results...");
-  const analysisData = { screenshots: mergedScreenshots };
+  const analysisData = { screenshots: analyzeResult.screenshots };
 
   // Map results — each uploaded image becomes a "page" with desktop viewport
   const pages: PageResult[] = savedFiles.map((sf) => {

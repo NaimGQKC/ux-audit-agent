@@ -168,6 +168,7 @@ export function findCachedAudits(url?: string): CachedAuditMeta[] {
 
 /**
  * Load a full cached audit result by ID.
+ * Rewrites filesystem screenshot paths to cache-aware API URLs so the UI can serve them.
  */
 export function loadCachedAudit(id: string): CachedAuditResult | null {
   const resultPath = path.join(CACHE_DIR, id, "result.json");
@@ -178,6 +179,25 @@ export function loadCachedAudit(id: string): CachedAuditResult | null {
   try {
     const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8"));
     const result = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
+
+    // Rewrite screenshot paths from filesystem to API URLs.
+    // Saved paths look like: C:\...\<cacheId>\screenshots\filename.png
+    // Need: /api/screenshot?c=<cacheId>&f=<filename>
+    if (result?.pages && Array.isArray(result.pages)) {
+      for (const page of result.pages) {
+        if (page.viewports && typeof page.viewports === "object") {
+          for (const vp of Object.values(page.viewports) as Array<{ screenshotPath?: string }>) {
+            if (vp.screenshotPath && !vp.screenshotPath.startsWith("/api/")) {
+              const filename = path.basename(vp.screenshotPath);
+              if (filename && filename !== vp.screenshotPath) {
+                vp.screenshotPath = `/api/screenshot?c=${encodeURIComponent(id)}&f=${encodeURIComponent(filename)}`;
+              }
+            }
+          }
+        }
+      }
+    }
+
     return { meta, result };
   } catch {
     return null;

@@ -164,40 +164,39 @@ function formatTaskName(issue: UXIssue): string {
 }
 
 function formatTaskHtmlNotes(issue: UXIssue): string {
+  // Asana html_notes is XML-strict and only supports a small tag set:
+  // <body>, <h1>, <h2>, <strong>, <em>, <u>, <s>, <code>, <pre>,
+  // <ol>, <ul>, <li>, <a>, <hr>, <img>, <blockquote>.
+  // <p> and <br> are NOT allowed and will return "XML is invalid".
+  // Use bare text between <h2> blocks for prose, <ul><li> for metadata.
+
   const priority = mapPriority(issue.severity);
   const emoji = SEVERITY_EMOJI[issue.severity];
-  const viewports = issue.affected_viewports.join(", ");
+  const viewports = (issue.affected_viewports ?? []).join(", ") || "all";
 
-  const principleSection = issue.principle
-    ? `\n<p>Principle: <strong>${escapeHtml(issue.principle)}</strong></p>`
-    : "";
+  const metaItems = [
+    `<li>Severity: <strong>${emoji} ${escapeHtml(issue.severity)}</strong> (Priority: ${escapeHtml(priority)})</li>`,
+    `<li>Category: <strong>${escapeHtml(issue.category)}</strong></li>`,
+    `<li>Affected viewports: <strong>${escapeHtml(viewports)}</strong></li>`,
+    issue.principle
+      ? `<li>Principle: <strong>${escapeHtml(issue.principle)}</strong></li>`
+      : "",
+  ].filter(Boolean).join("");
+
+  // Guard every field — downstream data may have undefined if validation was skipped
+  const safe = (s: string | undefined | null) => escapeHtml(s ?? "");
 
   return [
     "<body>",
-    `<h2>Issue Description</h2>`,
-    `<p>${escapeHtml(issue.description)}</p>`,
-    "",
-    `<h2>Severity &amp; Category</h2>`,
-    `<p>${emoji} <strong>${escapeHtml(issue.severity)}</strong> (Priority: ${escapeHtml(priority)}) · Category: <strong>${escapeHtml(issue.category)}</strong></p>`,
-    `<p>Affected viewports: <strong>${escapeHtml(viewports)}</strong></p>`,
-    principleSection,
-    "",
-    `<h2>Affected Element</h2>`,
-    `<p><code>${escapeHtml(issue.affected_element)}</code></p>`,
-    "",
-    `<h2>Steps to Reproduce</h2>`,
-    `<p>${escapeHtml(issue.steps_to_reproduce)}</p>`,
-    "",
-    `<h2>Suggested Fix</h2>`,
-    `<p>${escapeHtml(issue.suggested_fix)}</p>`,
-    "",
-    `<h2>Acceptance Criteria</h2>`,
-    `<p>${escapeHtml(issue.acceptance_criteria)}</p>`,
-    "",
-    `<h2>Recommendation</h2>`,
-    `<p>${escapeHtml(issue.recommendation)}</p>`,
+    `<h2>Issue Description</h2>${safe(issue.description)}`,
+    `<h2>Severity &amp; Category</h2><ul>${metaItems}</ul>`,
+    `<h2>Affected Element</h2><code>${safe(issue.affected_element)}</code>`,
+    `<h2>Steps to Reproduce</h2>${safe(issue.steps_to_reproduce)}`,
+    `<h2>Suggested Fix</h2>${safe(issue.suggested_fix)}`,
+    `<h2>Acceptance Criteria</h2>${safe(issue.acceptance_criteria)}`,
+    `<h2>Recommendation</h2>${safe(issue.recommendation)}`,
     "</body>",
-  ].join("\n");
+  ].join("");
 }
 
 function escapeHtml(text: string): string {

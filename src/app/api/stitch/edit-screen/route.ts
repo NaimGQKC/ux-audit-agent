@@ -18,7 +18,18 @@ export async function POST(request: Request) {
       );
     }
 
-    const result = await editScreen({ projectId, screenIds, prompt });
+    if (!Array.isArray(screenIds) || screenIds.length === 0 || !screenIds.every((id) => typeof id === "string")) {
+      return NextResponse.json(
+        { error: "screenIds must be a non-empty array of strings" },
+        { status: 400 }
+      );
+    }
+
+    if (typeof prompt !== "string" || prompt.trim().length === 0) {
+      return NextResponse.json({ error: "prompt must be a non-empty string" }, { status: 400 });
+    }
+
+    const result = await editScreen({ projectId, screenIds, prompt: prompt.trim() });
 
     return NextResponse.json(result);
   } catch (error) {

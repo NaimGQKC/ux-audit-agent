@@ -46,4 +46,8 @@ next-env.d.ts
 /.windsurf
 /skills
 /.claude/skills
+/.claude/scheduled_tasks.lock
 skills-lock.json
+
+# QA artifacts
+qa-smoke-report.html

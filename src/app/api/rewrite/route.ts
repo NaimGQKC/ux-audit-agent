@@ -160,11 +160,25 @@ export async function POST(request: NextRequest) {
   try {
     parsed = JSON.parse(jsonText);
   } catch {
-    console.error("[rewrite] Claude returned invalid JSON:", rawOutput.slice(0, 500));
-    return NextResponse.json(
-      { error: "Claude returned invalid JSON. Please try again." },
-      { status: 502 }
-    );
+    // Known flake: Claude CLI sometimes truncates trailing closing braces.
+    // Try repairing by appending 1–5 braces.
+    let repaired: unknown = null;
+    for (let i = 1; i <= 5; i++) {
+      try {
+        repaired = JSON.parse(jsonText.trimEnd() + "}".repeat(i));
+        break;
+      } catch {
+        // try more braces
+      }
+    }
+    if (!repaired) {
+      console.error("[rewrite] Claude returned invalid JSON:", rawOutput.slice(0, 500));
+      return NextResponse.json(
+        { error: "Claude returned invalid JSON. Please try again." },
+        { status: 502 }
+      );
+    }
+    parsed = repaired;
   }
 
   let rewritten: UXIssue;
