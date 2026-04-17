@@ -10,6 +10,10 @@ import {
 // ---------------------------------------------------------------------------
 
 interface IssuePayload {
+  /** Client-side id, echoed back in the response so the UI can map the
+   * created Asana permalink onto the specific issue (enables pin ↔ ticket
+   * linking). */
+  id?: string;
   title: string;
   description: string;
   severity: "critical" | "major" | "minor";
@@ -84,8 +88,11 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Map incoming payloads to the Asana module's UXIssue shape
+  // Map incoming payloads to the Asana module's UXIssue shape.
+  // Preserve issue.id on the Asana UXIssue so the batch result can be
+  // correlated back to the originating UI issue row by row.
   const asanaIssues: AsanaUXIssue[] = body.issues.map((issue) => ({
+    ...(issue.id ? { id: issue.id } : {}),
     title: issue.title,
     description: issue.description,
     severity: issue.severity,
@@ -110,13 +117,25 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // createMultipleTickets preserves request order (sequential + delay),
+  // so align results back to payloads positionally. `failed` entries appear
+  // in the order the loop hit them; we fall back to title-match if needed.
+  const titleToId = new Map<string, string>();
+  for (const issue of body.issues) {
+    if (issue.id) titleToId.set(issue.title, issue.id);
+  }
+
+  const createdById = result.created.map((task) => ({
+    issueId: titleToId.get(stripTaskPrefix(task.name)) ?? null,
+    taskId: task.gid,
+    name: task.name,
+    url: task.url,
+  }));
+
   return NextResponse.json({
-    created: result.created.map((task) => ({
-      taskId: task.gid,
-      name: task.name,
-      url: task.url,
-    })),
+    created: createdById,
     failed: result.failed.map((f) => ({
+      issueId: f.issue.id ?? null,
       issue: f.issue.title,
       error: f.error,
     })),
@@ -126,4 +145,10 @@ export async function POST(request: NextRequest) {
       failed: result.failed.length,
     },
   });
+}
+
+// Asana task names are prefixed with "[UX-AUDIT · <emoji> <priority>] ".
+// Strip that so we can match back to the raw issue title.
+function stripTaskPrefix(name: string): string {
+  return name.replace(/^\[UX-AUDIT\s·\s[^\]]+\]\s*/, "");
 }

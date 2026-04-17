@@ -12,6 +12,7 @@ import {
   type BrowserSessionState,
   type UploadedScreenshot,
   toAuditIssue,
+  sortBySeverity,
 } from "@/types/audit";
 
 // ---------------------------------------------------------------------------
@@ -34,6 +35,12 @@ export function useAudit() {
   // Browser session (persistent profile)
   const [usePersistedSession, setUsePersistedSession] = useState(false);
   const [interactiveLogin, setInteractiveLogin] = useState(false);
+  const [useRealChrome, setUseRealChrome] = useState(false);
+  const [realChromeHeadless, setRealChromeHeadless] = useState(false);
+
+  // Interaction capture (tab switchers, custom click selectors)
+  const [captureInteractions, setCaptureInteractions] = useState(true);
+  const [clickSelectorsText, setClickSelectorsText] = useState("");
   const [browserSession, setBrowserSession] = useState<BrowserSessionState>({
     sessionId: null,
     status: "idle",
@@ -54,6 +61,11 @@ export function useAudit() {
   // Cookies
   const [cookieText, setCookieText] = useState("");
   const [cookieError, setCookieError] = useState<string | null>(null);
+
+  // Automated login credentials — kept in memory only, never persisted
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [autoLoginEnabled, setAutoLoginEnabled] = useState(false);
 
   // Screenshot upload
   const [uploadedScreenshots, setUploadedScreenshots] = useState<UploadedScreenshot[]>([]);
@@ -295,7 +307,12 @@ export function useAudit() {
               .replace(/-/g, " ")
               .replace(/\b\w/g, (l) => l.toUpperCase()) || "Uploaded Page";
 
-      return { url: pg.url, title, issues: allIssues, screenshots };
+      return {
+        url: pg.url,
+        title,
+        issues: sortBySeverity(allIssues),
+        screenshots,
+      };
     });
   }
 
@@ -361,19 +378,40 @@ export function useAudit() {
               const detail = String(parsed.detail ?? "");
               setProgressDetail(detail);
               if (detail.includes("Crawling") || detail.includes("Resuming")) setPhase("crawling");
-              else if (detail.includes("Discovered")) setPhase("screenshotting");
+              else if (detail.includes("Discovered") || detail.includes("Target page")) setPhase("screenshotting");
               else if (detail.includes("Analyz") || detail.includes("Reading")) setPhase("analyzing");
               else if (detail.includes("complete")) setPhase("done");
               else if (detail.includes("Login confirmed") || detail.includes("SSO login complete")) {
                 setBrowserSession({ sessionId: null, status: "idle" });
               }
+            } else if (currentEvent === "page_result") {
+              // Progressive scan: a single page just finished analysis.
+              // Append it to the existing pages rather than replacing.
+              setPhase("analyzing");
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const pageData = (parsed as any).page as {
+                route: string;
+                url: string;
+                viewports: Record<string, { screenshotPath: string; issues: UXIssue[] }>;
+              };
+              const pageAudit = parseSSEResult({ pages: [pageData] })[0];
+              if (pageAudit) {
+                setPages((prev) => {
+                  // Avoid duplicates if the final result re-sends
+                  if (prev.some((p) => p.url === pageAudit.url)) return prev;
+                  return [...prev, pageAudit];
+                });
+                setActiveViewports((prev) => ({ ...prev, [pageAudit.url]: "desktop" }));
+              }
             } else if (currentEvent === "result") {
+              // Final combined result — reconcile with progressively-added pages
+              // and mark the audit as done.
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               const pageAudits = parseSSEResult(parsed as any);
               setPages(pageAudits);
               const viewportMap: Record<string, ViewportName> = {};
               pageAudits.forEach((p) => { viewportMap[p.url] = "desktop"; });
-              setActiveViewports(viewportMap);
+              setActiveViewports((prev) => ({ ...prev, ...viewportMap }));
               setPhase("done");
               setBrowserSession({ sessionId: null, status: "idle" });
               // Refresh persisted session status
@@ -420,6 +458,11 @@ export function useAudit() {
         setCookieError(null);
       }
 
+      const credentials =
+        autoLoginEnabled && loginEmail.trim() && loginPassword
+          ? { email: loginEmail.trim(), password: loginPassword }
+          : undefined;
+
       try {
         const res = await fetch("/api/audit", {
           method: "POST",
@@ -431,6 +474,15 @@ export function useAudit() {
             ...(cookies && { cookies }),
             ...(usePersistedSession && { usePersistedSession: true }),
             ...(interactiveLogin && { interactiveLogin: true }),
+            ...(useRealChrome && { useRealChrome: true, realChromeHeadless }),
+            ...(credentials && { credentials }),
+            captureInteractions,
+            ...(clickSelectorsText.trim() && {
+              clickSelectors: clickSelectorsText
+                .split(/\r?\n|,/)
+                .map((s) => s.trim())
+                .filter(Boolean),
+            }),
           }),
         });
 
@@ -451,7 +503,7 @@ export function useAudit() {
         setPhase("idle");
       }
     },
-    [url, prdText, repoContext, cookieText, parseCookieText, usePersistedSession, interactiveLogin, processSSEStream],
+    [url, prdText, repoContext, cookieText, parseCookieText, usePersistedSession, interactiveLogin, useRealChrome, realChromeHeadless, captureInteractions, clickSelectorsText, autoLoginEnabled, loginEmail, loginPassword, processSSEStream],
   );
 
   // -----------------------------------------------------------------------
@@ -842,6 +894,22 @@ export function useAudit() {
   }, [brandConfig, stitchProjectId, url]);
 
   // -----------------------------------------------------------------------
+  // Reset — return the dashboard to idle so the user can start a new audit
+  // -----------------------------------------------------------------------
+
+  const resetAudit = useCallback(() => {
+    setPhase("idle");
+    setPages([]);
+    setActiveViewports({});
+    setActiveScreenshotView({});
+    setAuditError(null);
+    setAuthState(null);
+    setProgressDetail("");
+    setBrowserSession({ sessionId: null, status: "idle" });
+    setUrl("");
+  }, []);
+
+  // -----------------------------------------------------------------------
   // Cache — load previous audit
   // -----------------------------------------------------------------------
 
@@ -930,6 +998,7 @@ export function useAudit() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           issues: approvedIssues.map((i) => ({
+            id: i.id,
             title: i.title,
             description: i.description,
             severity: i.severity,
@@ -949,7 +1018,29 @@ export function useAudit() {
         const err = await res.json().catch(() => ({ error: "Request failed" }));
         throw new Error(err.error ?? `HTTP ${res.status}`);
       }
-      const data = await res.json();
+      const data = (await res.json()) as {
+        created: { issueId: string | null; taskId: string; url: string }[];
+        summary: { created: number; failed: number };
+      };
+
+      // Stamp the returned Asana permalink + task id onto each matching
+      // issue so the UI can link the pin ↔ ticket in both directions.
+      const urlByIssue = new Map<string, { url: string; taskId: string }>();
+      for (const c of data.created) {
+        if (c.issueId) urlByIssue.set(c.issueId, { url: c.url, taskId: c.taskId });
+      }
+      if (urlByIssue.size > 0) {
+        setPages((prev) =>
+          prev.map((p) => ({
+            ...p,
+            issues: p.issues.map((i) => {
+              const m = urlByIssue.get(i.id);
+              return m ? { ...i, asanaUrl: m.url, asanaTaskId: m.taskId } : i;
+            }),
+          })),
+        );
+      }
+
       alert(
         `Created ${data.summary.created} Asana ticket(s).` +
           (data.summary.failed > 0 ? ` ${data.summary.failed} failed.` : ""),
@@ -981,6 +1072,10 @@ export function useAudit() {
     // Browser session (persistent profile)
     usePersistedSession, setUsePersistedSession,
     interactiveLogin, setInteractiveLogin,
+    useRealChrome, setUseRealChrome,
+    realChromeHeadless, setRealChromeHeadless,
+    captureInteractions, setCaptureInteractions,
+    clickSelectorsText, setClickSelectorsText,
     browserSession,
     hasPersistedSession,
     handleProceedAfterLogin,
@@ -1004,6 +1099,11 @@ export function useAudit() {
     cookieText, setCookieText,
     cookieError, setCookieError,
     parseCookieText,
+
+    // Automated login credentials
+    autoLoginEnabled, setAutoLoginEnabled,
+    loginEmail, setLoginEmail,
+    loginPassword, setLoginPassword,
 
     // Screenshot upload
     uploadedScreenshots, setUploadedScreenshots,
@@ -1031,6 +1131,7 @@ export function useAudit() {
 
     // Audit
     handleRunAudit,
+    resetAudit,
 
     // Cache
     cachedAudits,

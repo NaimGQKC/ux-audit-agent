@@ -28,6 +28,8 @@ export interface AuditIssue extends UXIssue {
   fixError?: string;
   refinePrompt: string;
   refinePromptOpen: boolean;
+  asanaUrl?: string;
+  asanaTaskId?: string;
 }
 
 export interface PageAudit {
@@ -90,6 +92,22 @@ export function toAuditIssue(issue: UXIssue): AuditIssue {
     refinePrompt: "",
     refinePromptOpen: false,
   };
+}
+
+// Severity rank — lower = more severe. Used to order issues + number pins
+// so the user sees critical findings first and pin #1 is the worst offender.
+const SEVERITY_RANK: Record<UXIssue["severity"], number> = {
+  critical: 0,
+  major: 1,
+  minor: 2,
+};
+
+export function sortBySeverity<T extends { severity: UXIssue["severity"] }>(
+  issues: T[],
+): T[] {
+  return [...issues].sort(
+    (a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity],
+  );
 }
 
 // ---------------------------------------------------------------------------

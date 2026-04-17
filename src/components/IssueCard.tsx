@@ -14,10 +14,20 @@ import {
   Send,
   Undo2,
   X,
+  ExternalLink,
+  MapPin,
 } from "lucide-react";
 import type { AuditIssue } from "@/types/audit";
 import { SEVERITY_BORDER, SEVERITY_BADGE } from "@/types/audit";
 import { StitchFixPanel } from "@/components/StitchFixPanel";
+
+// Severity → matching pin fill so the badge in the card reads as the same
+// object as the pin on the screenshot.
+const SEVERITY_PIN_BG: Record<AuditIssue["severity"], string> = {
+  critical: "bg-[#DC143C]",
+  major: "bg-orange-500",
+  minor: "bg-amber-500",
+};
 
 // ---------------------------------------------------------------------------
 // Diff highlighting helper
@@ -55,6 +65,8 @@ function HighlightedText({
 
 export function IssueCard({
   issue,
+  pinNumber,
+  onRevealPin,
   onUpdate,
   onRewrite,
   prdContext,
@@ -64,6 +76,11 @@ export function IssueCard({
   stitchConnected,
 }: {
   issue: AuditIssue;
+  /** Pin number rendered on the annotated screenshot. `undefined` when the
+   * issue has no bounding box (or is dismissed) — we just hide the badge. */
+  pinNumber?: number;
+  /** Scroll + briefly highlight the matching pin on the screenshot. */
+  onRevealPin?: (issueId: string) => void;
   onUpdate: (id: string, patch: Partial<AuditIssue>) => void;
   onRewrite: (issue: AuditIssue, instruction: string, prdContext: string) => void;
   prdContext: string;
@@ -95,7 +112,8 @@ export function IssueCard({
 
   return (
     <Card
-      className={`transition-all ${
+      data-issue-card={issue.id}
+      className={`transition-all scroll-mt-20 ${
         isDismissed
           ? "opacity-50 border-muted"
           : isApproved
@@ -107,6 +125,17 @@ export function IssueCard({
         <div className="flex items-start justify-between gap-3">
           <div className="flex-1 space-y-1.5">
             <div className="flex items-center gap-2">
+              {pinNumber !== undefined && (
+                <button
+                  type="button"
+                  onClick={() => onRevealPin?.(issue.id)}
+                  title="Show on screenshot"
+                  aria-label={`Show pin ${pinNumber} on screenshot`}
+                  className={`shrink-0 inline-flex items-center justify-center w-6 h-6 rounded-full text-white text-xs font-bold ring-2 ring-white shadow-sm hover:scale-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring transition-transform ${SEVERITY_PIN_BG[issue.severity]}`}
+                >
+                  {pinNumber}
+                </button>
+              )}
               <h4
                 className={`font-semibold text-base ${isDismissed ? "line-through text-muted-foreground" : ""} ${
                   hasChanges && issue.previousVersion?.title !== issue.title
@@ -259,6 +288,29 @@ export function IssueCard({
             <XCircle className="w-3.5 h-3.5 mr-1.5" />
             {isDismissed ? "Restore" : "Dismiss"}
           </Button>
+          {pinNumber !== undefined && onRevealPin && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-muted-foreground hover:text-foreground"
+              onClick={() => onRevealPin(issue.id)}
+              title="Jump to this pin on the screenshot"
+            >
+              <MapPin className="w-3.5 h-3.5 mr-1.5" />
+              Show on screenshot
+            </Button>
+          )}
+          {issue.asanaUrl && (
+            <a
+              href={issue.asanaUrl}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="inline-flex items-center h-8 px-3 rounded-md border border-purple-200 bg-purple-50 text-purple-700 text-sm font-medium hover:bg-purple-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <ExternalLink className="w-3.5 h-3.5 mr-1.5" />
+              Open in Asana
+            </a>
+          )}
         </div>
 
         {/* Prompt-based edit input */}

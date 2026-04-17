@@ -9,8 +9,9 @@ import {
   Wand2,
 } from "lucide-react";
 import type { ViewportName } from "@/lib/crawler";
-import type { AuditIssue, PageAudit } from "@/types/audit";
-import { SEVERITY_COLORS, SEVERITY_OVERLAY, VIEWPORT_DIMENSIONS } from "@/types/audit";
+import type { PageAudit } from "@/types/audit";
+import { VIEWPORT_DIMENSIONS } from "@/types/audit";
+import { AnnotatedScreenshot } from "./AnnotatedScreenshot";
 
 // ---------------------------------------------------------------------------
 // Viewport toggle
@@ -50,23 +51,43 @@ export function ViewportToggle({
 }
 
 // ---------------------------------------------------------------------------
-// Screenshot renderers
+// Screenshot size resolution
 // ---------------------------------------------------------------------------
 
-function maxWidthForViewport(viewport: ViewportName): number {
-  return viewport === "mobile" ? 225 : viewport === "tablet" ? 346 : 504;
+/**
+ * Compact vs. Zen-Mode sizing:
+ *  - `fullHeight = false` keeps the original tight column layout used when
+ *    the expanded AuditForm is visible.
+ *  - `fullHeight = true` expands to ~70 vh tall so the side-by-side view
+ *    dominates the viewport when the StatusBar is collapsed.
+ */
+function dimsForViewport(viewport: ViewportName, fullHeight: boolean) {
+  if (fullHeight) {
+    return viewport === "mobile"
+      ? { maxWidth: 360, maxHeight: Math.round(0.7 * 1000) }
+      : viewport === "tablet"
+        ? { maxWidth: 540, maxHeight: Math.round(0.7 * 1000) }
+        : { maxWidth: 780, maxHeight: Math.round(0.7 * 1000) };
+  }
+  return viewport === "mobile"
+    ? { maxWidth: 225, maxHeight: 600 }
+    : viewport === "tablet"
+      ? { maxWidth: 346, maxHeight: 600 }
+      : { maxWidth: 504, maxHeight: 600 };
 }
 
 function ScreenshotPlaceholder({
   page,
   viewport,
+  fullHeight,
 }: {
   page: PageAudit;
   viewport: ViewportName;
+  fullHeight: boolean;
 }) {
   const src = page.screenshots[viewport];
+  const { maxWidth, maxHeight } = dimsForViewport(viewport, fullHeight);
   const dims = VIEWPORT_DIMENSIONS[viewport];
-  const maxWidth = maxWidthForViewport(viewport);
 
   if (!src) {
     return (
@@ -85,70 +106,8 @@ function ScreenshotPlaceholder({
       src={src}
       alt={`${page.title} — ${viewport}`}
       className="rounded-lg border border-border object-contain"
-      style={{ maxWidth, maxHeight: 600 }}
+      style={{ maxWidth, maxHeight }}
     />
-  );
-}
-
-function AnnotatedScreenshot({
-  page,
-  viewport,
-  issues,
-}: {
-  page: PageAudit;
-  viewport: ViewportName;
-  issues: AuditIssue[];
-}) {
-  const src = page.screenshots[viewport];
-  const dims = VIEWPORT_DIMENSIONS[viewport];
-  const maxWidth = maxWidthForViewport(viewport);
-  const scale = maxWidth / dims.w;
-  const visibleIssues = issues.filter((i) => i.status !== "dismissed");
-
-  if (!src) {
-    return (
-      <div
-        className="bg-muted rounded-lg border border-border flex items-center justify-center text-muted-foreground text-sm"
-        style={{ width: maxWidth, height: maxWidth * (dims.h / dims.w) }}
-      >
-        No screenshot
-      </div>
-    );
-  }
-
-  return (
-    <div className="relative inline-block">
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src={src}
-        alt={`${page.title} — ${viewport} (annotated)`}
-        className="rounded-lg border border-border object-contain"
-        style={{ maxWidth, maxHeight: 600 }}
-      />
-      {visibleIssues.map(
-        (issue) =>
-          issue.bounding_box && (
-            <div
-              key={issue.id}
-              className={`absolute border-2 rounded-sm ${SEVERITY_OVERLAY[issue.severity]} pointer-events-none`}
-              style={{
-                left: issue.bounding_box.x * scale,
-                top: issue.bounding_box.y * scale,
-                width: issue.bounding_box.width * scale,
-                height: issue.bounding_box.height * scale,
-              }}
-            >
-              <span
-                className={`absolute -top-4 left-0 text-[9px] font-bold px-1 rounded text-white ${SEVERITY_COLORS[issue.severity]}`}
-              >
-                {issue.title.length > 22
-                  ? issue.title.slice(0, 22) + "\u2026"
-                  : issue.title}
-              </span>
-            </div>
-          ),
-      )}
-    </div>
   );
 }
 
@@ -161,14 +120,21 @@ export function ScreenshotViewer({
   viewport,
   activeView,
   onViewChange,
+  hoveredIssueId,
+  onPinClick,
+  fullHeight = false,
 }: {
   page: PageAudit;
   viewport: ViewportName;
   activeView: "original" | "annotated" | "fix";
   onViewChange: (view: "original" | "annotated" | "fix") => void;
+  hoveredIssueId?: string | null;
+  onPinClick?: (issue: import("@/types/audit").AuditIssue) => void;
+  fullHeight?: boolean;
 }) {
   const hasFix = page.issues.some((i) => i.fix);
   const views = ["original", "annotated", ...(hasFix ? ["fix" as const] : [])] as const;
+  const dims = dimsForViewport(viewport, fullHeight);
 
   return (
     <>
@@ -195,7 +161,7 @@ export function ScreenshotViewer({
         ))}
       </div>
 
-      {/* Side-by-side screenshots */}
+      {/* Side-by-side screenshots — in Zen Mode fills the width of the viewer */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Original */}
         <div className="space-y-2">
@@ -204,7 +170,7 @@ export function ScreenshotViewer({
             Original
           </h3>
           <div className="flex justify-center p-4 bg-muted/30 rounded-xl border border-border">
-            <ScreenshotPlaceholder page={page} viewport={viewport} />
+            <ScreenshotPlaceholder page={page} viewport={viewport} fullHeight={fullHeight} />
           </div>
         </div>
         {/* Annotated or Fix */}
@@ -219,7 +185,8 @@ export function ScreenshotViewer({
               <img
                 src={page.issues.find((i) => i.fix)!.fix!.imageUrl}
                 alt="Generated fix mockup"
-                className="rounded-lg max-h-[400px] object-contain"
+                className="rounded-lg object-contain"
+                style={{ maxHeight: dims.maxHeight }}
               />
             </div>
           </div>
@@ -238,6 +205,10 @@ export function ScreenshotViewer({
                 page={page}
                 viewport={viewport}
                 issues={page.issues}
+                hoveredIssueId={hoveredIssueId ?? null}
+                onPinClick={onPinClick}
+                maxWidth={dims.maxWidth}
+                maxHeight={dims.maxHeight}
               />
             </div>
           </div>
