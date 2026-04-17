@@ -1,0 +1,29 @@
+{
+  "name": "USWDS",
+  "license": "CC0-1.0",
+  "source": "https://designsystem.digital.gov/design-tokens/ (font sizes from the 'body' type scale, spacing units × 8px base, radius tokens, and core theme colors)",
+  "baseUnit": 8,
+  "tokens": {
+    "fontSizes": [12, 13, 14, 15, 16, 17, 18, 22, 24, 32, 40, 48, 56, 64],
+    "spacing": [0, 4, 8, 12, 16, 20, 24, 32, 40, 48, 56, 64, 80, 104, 120],
+    "radius": [0, 2, 4, 8, 16, 9999],
+    "colors": [
+      "#000000",
+      "#ffffff",
+      "#1b1b1b",
+      "#565c65",
+      "#71767a",
+      "#a9aeb1",
+      "#dfe1e2",
+      "#f0f0f0",
+      "#005ea2",
+      "#0050d8",
+      "#1a4480",
+      "#162e51",
+      "#b50909",
+      "#e52207",
+      "#00a91c",
+      "#ffbe2e"
+    ]
+  }
+}

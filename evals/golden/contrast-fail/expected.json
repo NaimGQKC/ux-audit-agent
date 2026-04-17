@@ -1,0 +1,11 @@
+{
+  "url_or_file": "./index.html",
+  "description": "Light gray #cccccc body text on pure white — contrast ratio well below 4.5:1.",
+  "must_match": [
+    {
+      "category": "accessibility",
+      "keyword_any": ["contrast", "color contrast", "WCAG 1.4.3", "1.4.3"],
+      "min_severity": "major"
+    }
+  ]
+}

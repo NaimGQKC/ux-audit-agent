@@ -6,16 +6,22 @@ import {
   type Cookie,
   type CrawlResult,
   type ViewportName,
+  type AxeFinding,
+  type DriftFinding,
   VIEWPORTS,
   launchHeadedPersistentBrowser,
+  launchRealChromeSession,
   extractCookiesAndClose,
   checkSSOReturn,
   waitForReadySignal,
 } from "@/lib/crawler";
 import { validateAnalysisResult, type UXIssue } from "@/lib/analyzer";
-import { analyzeScreenshotsDir } from "@/lib/analyzer/run";
+import { analyzeScreenshots } from "@/lib/analyzer/run";
 import { checkClaudeHealth } from "@/lib/claude";
 import { saveAuditToCache } from "@/lib/cache";
+import { runLighthouse, type LighthouseFinding } from "@/lib/deterministic/lighthouse";
+import { mergeFindings } from "@/lib/deterministic/merge";
+import { saveRun, summarize, isValidRunId } from "@/lib/persistence/runs";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -28,6 +34,18 @@ interface AuditRequestBody {
   cookies?: Cookie[];
   usePersistedSession?: boolean;
   interactiveLogin?: boolean;
+  /** Use the user's real Google Chrome install + profile for interactive login. */
+  useRealChrome?: boolean;
+  /** When useRealChrome is true, run headless. Default: false (headed). */
+  realChromeHeadless?: boolean;
+  /** Optional credentials for automated headless login (never logged/persisted). */
+  credentials?: { email: string; password: string };
+  /** Skip axe + Lighthouse runs. Useful during development to keep audits fast. */
+  skipDeterministic?: boolean;
+  /** Auto-capture tab switchers / interactions on the target page. Default: true. */
+  captureInteractions?: boolean;
+  /** Optional CSS selectors the crawler clicks on the target page. */
+  clickSelectors?: string[];
 }
 
 interface ViewportAnalysis {
@@ -53,6 +71,7 @@ interface AuditResult {
 
 type SSEWriter = {
   sendProgress: (detail: string, current?: number, total?: number) => void;
+  sendPageResult: (page: PageResult, pageIndex: number, totalPages: number) => void;
   sendResult: (data: AuditResult) => void;
   sendError: (message: string) => void;
   sendAuthRequired: (authUrl: string, screenshot: string) => void;
@@ -72,6 +91,9 @@ function createSSEWriter(controller: ReadableStreamDefaultController<Uint8Array>
   return {
     sendProgress(detail: string, current?: number, total?: number) {
       send("progress", { detail, ...(current != null && { current }), ...(total != null && { total }) });
+    },
+    sendPageResult(page: PageResult, pageIndex: number, totalPages: number) {
+      send("page_result", { page, pageIndex, totalPages });
     },
     sendResult(data: AuditResult) {
       send("result", data);
@@ -102,19 +124,22 @@ function isValidUrl(input: string): boolean {
   try {
     const url = new URL(input);
     if (url.protocol !== "http:" && url.protocol !== "https:") return false;
-    // Block private/internal IPs to prevent SSRF
-    const hostname = url.hostname.toLowerCase();
-    if (
-      hostname === "localhost" ||
-      hostname === "[::1]" ||
-      hostname.startsWith("127.") ||
-      hostname.startsWith("10.") ||
-      hostname.startsWith("192.168.") ||
-      /^172\.(1[6-9]|2\d|3[01])\./.test(hostname) ||
-      hostname.startsWith("169.254.") ||
-      hostname.endsWith(".local")
-    ) {
-      return false;
+    // Block private/internal IPs to prevent SSRF — skipped in development so devs
+    // can audit their own localhost apps.
+    if (process.env.NODE_ENV !== "development") {
+      const hostname = url.hostname.toLowerCase();
+      if (
+        hostname === "localhost" ||
+        hostname === "[::1]" ||
+        hostname.startsWith("127.") ||
+        hostname.startsWith("10.") ||
+        hostname.startsWith("192.168.") ||
+        /^172\.(1[6-9]|2\d|3[01])\./.test(hostname) ||
+        hostname.startsWith("169.254.") ||
+        hostname.endsWith(".local")
+      ) {
+        return false;
+      }
     }
     return true;
   } catch {
@@ -133,7 +158,7 @@ function screenshotUrl(sessionId: string, filename: string): string {
 // ---------------------------------------------------------------------------
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 300; // Allow up to 5 minutes for large sites
+export const maxDuration = 900; // Allow up to 15 minutes for large sites
 
 export async function POST(request: NextRequest) {
   let body: AuditRequestBody;
@@ -175,7 +200,7 @@ export async function POST(request: NextRequest) {
       }, 15_000);
 
       try {
-        await runAudit(body.url, sse, body.prdContext, body.repoContext, body.cookies, body.usePersistedSession, body.interactiveLogin);
+        await runAudit(body.url, sse, body.prdContext, body.repoContext, body.cookies, body.usePersistedSession, body.interactiveLogin, body.credentials, body.skipDeterministic, body.useRealChrome, body.realChromeHeadless, body.captureInteractions, body.clickSelectors);
       } catch (err) {
         sse.sendError((err as Error).message);
       } finally {
@@ -209,13 +234,24 @@ async function runAudit(
   cookies?: Cookie[],
   usePersistedSession?: boolean,
   interactiveLogin?: boolean,
+  credentials?: { email: string; password: string },
+  skipDeterministic?: boolean,
+  useRealChrome?: boolean,
+  realChromeHeadless?: boolean,
+  captureInteractions?: boolean,
+  clickSelectors?: string[],
 ): Promise<void> {
   // --- Interactive login: open headed browser, wait for user ---------------
   if (interactiveLogin) {
-    sse.sendProgress("Launching browser for interactive login...");
+    sse.sendProgress(
+      useRealChrome
+        ? `Launching your Google Chrome (${realChromeHeadless ? "headless" : "headed"}) for interactive login...`
+        : "Launching browser for interactive login...",
+    );
 
-    const { sessionId: loginSessionId } =
-      await launchHeadedPersistentBrowser(url);
+    const { sessionId: loginSessionId } = useRealChrome
+      ? await launchRealChromeSession(url, { headless: !!realChromeHeadless })
+      : await launchHeadedPersistentBrowser(url);
 
     // Tell the frontend the browser is open — it shows "I'm logged in" button
     sse.sendInteractiveLoginReady(loginSessionId);
@@ -239,10 +275,21 @@ async function runAudit(
   }
 
   // --- Step 1: Crawl and screenshot ----------------------------------------
-  sse.sendProgress("Crawling site and discovering pages...");
+  sse.sendProgress(
+    credentials
+      ? "Crawling site (auto-login enabled)..."
+      : "Crawling site and discovering pages...",
+  );
 
   const outputDir = path.join(os.tmpdir(), `ux-audit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
-  const outcome = await crawlAndScreenshot(url, outputDir, cookies, usePersistedSession);
+  const outcome = await crawlAndScreenshot(url, outputDir, cookies, usePersistedSession, {
+    credentials,
+    skipAxe: skipDeterministic,
+    onAxeProgress: (route, vp) => sse.sendProgress(`Running axe on ${route} @ ${vp}`),
+    captureInteractions: captureInteractions ?? true,
+    clickSelectors,
+    onInteractionProgress: (label) => sse.sendProgress(label),
+  });
 
   // --- Handle SSO redirect (persistent session detected origin mismatch) ---
   if ("needsSSOLogin" in outcome && outcome.needsSSOLogin) {
@@ -282,7 +329,13 @@ async function runAudit(
 
     // Re-crawl with the authenticated cookies + persisted profile
     sse.sendProgress("Resuming crawl with authenticated session...");
-    const retryOutcome = await crawlAndScreenshot(url, outputDir, ssoCookies, usePersistedSession);
+    const retryOutcome = await crawlAndScreenshot(url, outputDir, ssoCookies, usePersistedSession, {
+      skipAxe: skipDeterministic,
+      onAxeProgress: (route, vp) => sse.sendProgress(`Running axe on ${route} @ ${vp}`),
+      captureInteractions: captureInteractions ?? true,
+      clickSelectors,
+      onInteractionProgress: (label) => sse.sendProgress(label),
+    });
 
     if ("needsAuth" in retryOutcome && retryOutcome.needsAuth) {
       sse.sendAuthRequired(retryOutcome.authUrl, retryOutcome.screenshot);
@@ -294,7 +347,7 @@ async function runAudit(
     }
 
     const retryManifest = (retryOutcome as CrawlResult).manifest;
-    return analyzeAndEmit(retryManifest, outputDir, sse, prdContext, repoContext);
+    return analyzeAndEmit(retryManifest, outputDir, sse, prdContext, repoContext, skipDeterministic);
   }
 
   // If auth is required (legacy heuristic detection), send the event and stop
@@ -304,19 +357,30 @@ async function runAudit(
   }
 
   const manifest = (outcome as CrawlResult).manifest;
-  return analyzeAndEmit(manifest, outputDir, sse, prdContext, repoContext);
+  return analyzeAndEmit(manifest, outputDir, sse, prdContext, repoContext, skipDeterministic);
 }
 
 // ---------------------------------------------------------------------------
-// Analysis pipeline (shared by normal flow and SSO-retry flow)
+// Analysis pipeline — progressive page-by-page
+//
+// Strategy:
+//  1. Analyze the TARGET page first (the exact URL the user asked for) and
+//     emit its results immediately so the user sees value within ~60 s.
+//  2. Fan-out the remaining pages with bounded concurrency, emitting each
+//     page_result as soon as it completes.
+//  3. Emit the combined final `result` event for cache/backward compat.
 // ---------------------------------------------------------------------------
 
+/** Maximum pages analyzed concurrently (after the first). */
+const PAGE_CONCURRENCY = 2;
+
 async function analyzeAndEmit(
-  manifest: { baseUrl: string; timestamp: string; sessionId: string; routes: Array<{ route: string; url: string; screenshots: Record<ViewportName, string> }> },
+  manifest: { baseUrl: string; timestamp: string; sessionId: string; routes: Array<{ route: string; url: string; screenshots: Record<ViewportName, string>; axeFindings?: AxeFinding[]; tokenFindings?: DriftFinding[] }> },
   outputDir: string,
   sse: SSEWriter,
   prdContext?: string,
   repoContext?: string,
+  skipDeterministic?: boolean,
 ): Promise<void> {
   const sessionId = manifest.sessionId;
   const totalRoutes = manifest.routes.length;
@@ -327,46 +391,63 @@ async function analyzeAndEmit(
     return;
   }
 
-  sse.sendProgress(`Discovered ${totalRoutes} page(s). Analyzing screenshots with Claude...`);
+  sse.sendProgress(
+    totalRoutes === 1
+      ? "Analyzing page…"
+      : `Discovered ${totalRoutes} page(s). Analyzing the target page first…`,
+  );
 
-  // --- Run batched analyzer (shared with smoke-test) -----------------------
-  let mergedScreenshots: Record<string, { issues: unknown[] }> = {};
-  let totalBatches = 0;
-  let failedBatches = 0;
+  const allPages: PageResult[] = [];
+  // Per-route Lighthouse promise map — populated up-front by a serial
+  // background task so concurrency stays at 1 (Lighthouse is heavy) while
+  // LLM analysis still fans out. Each analyzePage() awaits its entry.
+  const lighthousePromiseByRoute = new Map<string, Promise<LighthouseFinding[]>>();
 
-  try {
-    const result = await analyzeScreenshotsDir(outputDir, {
-      prdContext,
-      repoContext,
-      onProgress: (msg, current, total) => sse.sendProgress(msg, current, total),
-    });
-    mergedScreenshots = result.screenshots;
-    totalBatches = result.totalBatches;
-    failedBatches = result.failedBatches;
-    for (const e of result.errors) {
-      sse.sendProgress(`Warning: batch ${e.batchIndex + 1} failed: ${e.reason}`);
+  // --- Helper: analyze one route's screenshots and return a PageResult ----
+  async function analyzePage(
+    routeEntry: (typeof manifest.routes)[number],
+    pageIdx: number,
+  ): Promise<PageResult> {
+    const pngs: string[] = [];
+    for (const vpName of VIEWPORT_NAMES) {
+      const filename = routeEntry.screenshots[vpName];
+      if (filename) {
+        pngs.push(path.join(outputDir, filename));
+      }
     }
-  } catch (err) {
-    // Only thrown when *every* batch failed — surface as fatal.
-    throw err;
-  }
 
-  if (totalBatches > 0 && failedBatches > 0) {
-    sse.sendProgress(`${failedBatches}/${totalBatches} batch(es) failed — partial results below.`);
-  }
+    // Group axe findings by screenshot basename so the prompt can inject them
+    // as CONFIRMED_ISSUES per screenshot — lets the LLM skip what axe caught.
+    const axeFindingsByScreenshot: Record<string, AxeFinding[]> = {};
+    for (const finding of routeEntry.axeFindings ?? []) {
+      const filename = routeEntry.screenshots[finding.viewport];
+      if (!filename) continue;
+      (axeFindingsByScreenshot[filename] ??= []).push(finding);
+    }
 
-  // --- Map results to page/viewport structure ------------------------------
-  sse.sendProgress("Reading analysis results...");
+    // Run analysis for this page's screenshots
+    const result = pngs.length > 0
+      ? await analyzeScreenshots(pngs, {
+          prdContext,
+          repoContext,
+          label: `page-${pageIdx + 1}`,
+          axeFindingsByScreenshot,
+          onProgress: (msg) =>
+            sse.sendProgress(`[${routeEntry.route}] ${msg}`, pageIdx, totalRoutes),
+        })
+      : { screenshots: {} as Record<string, { issues: unknown[] }>, totalBatches: 0, failedBatches: 0, errors: [] as { batchIndex: number; reason: string }[] };
 
-  const pages: PageResult[] = [];
+    if (result.failedBatches > 0) {
+      sse.sendProgress(`Warning: analysis failed for ${routeEntry.route}: ${result.errors[0]?.reason}`);
+    }
 
-  for (const routeEntry of manifest.routes) {
+    // Map to PageResult — per-viewport LLM issues first
     const viewports = {} as Record<ViewportName, ViewportAnalysis>;
-
+    const llmIssuesByViewport = {} as Record<ViewportName, UXIssue[]>;
     for (const vpName of VIEWPORT_NAMES) {
       const filename = routeEntry.screenshots[vpName] || "";
       const fileAnalysis = filename
-        ? (mergedScreenshots[filename] as { issues: unknown[] } | undefined)
+        ? (result.screenshots[filename] as { issues: unknown[] } | undefined)
         : undefined;
 
       let issues: UXIssue[] = [];
@@ -376,35 +457,168 @@ async function analyzeAndEmit(
           issues = validated.issues;
         } catch (err) {
           sse.sendProgress(
-            `Warning: validation failed for ${filename}: ${(err as Error).message}`
+            `Warning: validation failed for ${filename}: ${(err as Error).message}`,
           );
         }
       }
 
+      llmIssuesByViewport[vpName] = issues;
       viewports[vpName] = {
         screenshotPath: screenshotUrl(sessionId, filename),
         issues,
       };
     }
 
-    pages.push({
-      route: routeEntry.route,
-      url: routeEntry.url,
-      viewports,
-    });
+    // --- Merge deterministic findings onto the desktop viewport bucket ---
+    // Design decision: axe + Lighthouse findings don't have pixel bounding
+    // boxes and aren't naturally per-viewport (axe re-runs per viewport but
+    // the merge layer collapses duplicates). We attach the merged list to
+    // the desktop viewport — the canonical view — and keep per-viewport LLM
+    // issues intact on mobile/tablet. The merge itself still dedupes LLM vs
+    // axe across all viewports.
+    if (!skipDeterministic) {
+      const axeFindings = routeEntry.axeFindings ?? [];
+      const lhPromise = lighthousePromiseByRoute.get(routeEntry.route);
+      let lhFindings: LighthouseFinding[] = [];
+      if (lhPromise) {
+        try {
+          lhFindings = await lhPromise;
+        } catch (err) {
+          sse.sendProgress(
+            `Warning: Lighthouse failed for ${routeEntry.route}: ${(err as Error).message}`,
+          );
+        }
+      }
+      const allLlmIssues = [
+        ...llmIssuesByViewport.mobile,
+        ...llmIssuesByViewport.tablet,
+        ...llmIssuesByViewport.desktop,
+      ];
+      const tokenFindings = routeEntry.tokenFindings ?? [];
+      const merged = mergeFindings(allLlmIssues, axeFindings, lhFindings, tokenFindings, {
+        evidenceScreenshot: routeEntry.screenshots.desktop || undefined,
+      });
+      // Replace all three viewport buckets with the merged result on desktop,
+      // and strip LLM issues from mobile/tablet that survived the merge (they
+      // now appear under desktop). This avoids surfacing the same LLM issue
+      // multiple times in the UI.
+      viewports.desktop = {
+        screenshotPath: screenshotUrl(sessionId, routeEntry.screenshots.desktop || ""),
+        issues: merged,
+      };
+      // Preserve viewport-specific LLM issues on mobile/tablet only if they
+      // didn't get consumed by the merge — since mergeFindings returns all
+      // kept LLM issues without viewport attribution, we move per-viewport
+      // LLM issues exclusively to desktop to keep a single source of truth.
+      viewports.mobile = {
+        screenshotPath: screenshotUrl(sessionId, routeEntry.screenshots.mobile || ""),
+        issues: [],
+      };
+      viewports.tablet = {
+        screenshotPath: screenshotUrl(sessionId, routeEntry.screenshots.tablet || ""),
+        issues: [],
+      };
+    }
+
+    return { route: routeEntry.route, url: routeEntry.url, viewports };
   }
 
-  // --- Send final result ---------------------------------------------------
+  // --- Lighthouse serial background chain (concurrency=1) -----------------
+  // Kick off a chain that runs Lighthouse for every route sequentially. Each
+  // analyzePage() awaits the promise for its route before merging — so the
+  // LLM fan-out stays parallel while Lighthouse itself is never parallel.
+  if (!skipDeterministic) {
+    let chain: Promise<void> = Promise.resolve();
+    for (const routeEntry of manifest.routes) {
+      const promise = chain.then(async () => {
+        const collected: LighthouseFinding[] = [];
+        for (const vp of ["mobile", "desktop"] as const) {
+          sse.sendProgress(`Running Lighthouse on ${routeEntry.route} @ ${vp}`);
+          const lh = await runLighthouse(routeEntry.url, { viewport: vp });
+          if (lh.skipped) {
+            sse.sendProgress(
+              `Lighthouse skipped for ${routeEntry.route} @ ${vp}: ${lh.skipReason ?? "unknown"}`,
+            );
+          }
+          collected.push(...lh.findings);
+        }
+        return collected;
+      });
+      lighthousePromiseByRoute.set(routeEntry.route, promise);
+      // Silence unhandled-rejection warnings on the background chain —
+      // analyzePage() awaits and handles failures via try/catch on merge.
+      chain = promise.then(() => undefined, () => undefined);
+    }
+  }
+
+  // --- Step 1: Analyze the target page first (immediate value) -----------
+  const [firstRoute, ...remainingRoutes] = manifest.routes;
+  const firstPage = await analyzePage(firstRoute, 0);
+  allPages.push(firstPage);
+  sse.sendPageResult(firstPage, 0, totalRoutes);
+
+  // --- Step 2: Fan-out remaining pages with bounded concurrency ----------
+  if (remainingRoutes.length > 0) {
+    sse.sendProgress(
+      `Target page done — analyzing ${remainingRoutes.length} more page(s)…`,
+    );
+
+    let nextIdx = 0;
+    const pump = async (): Promise<void> => {
+      while (true) {
+        const i = nextIdx++;
+        if (i >= remainingRoutes.length) return;
+        const page = await analyzePage(remainingRoutes[i], i + 1);
+        allPages.push(page);
+        sse.sendPageResult(page, i + 1, totalRoutes);
+      }
+    };
+
+    const workers = Array.from(
+      { length: Math.min(PAGE_CONCURRENCY, remainingRoutes.length) },
+      () => pump(),
+    );
+    await Promise.all(workers);
+  }
+
+  // --- Step 3: Final combined result (for cache + backward compat) -------
   const result: AuditResult = {
     baseUrl: manifest.baseUrl,
     timestamp: manifest.timestamp,
-    pages,
+    pages: allPages,
   };
 
   try {
     saveAuditToCache(result, outputDir);
   } catch (err) {
     sse.sendProgress(`Warning: failed to cache results: ${(err as Error).message}`);
+  }
+
+  // Persist a flat findings report for the shareable /report/<runId> viewer.
+  // The crawler's sessionId (e.g. "ux-audit-1712345678901") doubles as the runId.
+  try {
+    const runId = manifest.sessionId;
+    if (isValidRunId(runId)) {
+      const allFindings: UXIssue[] = [];
+      for (const page of allPages) {
+        for (const viewport of Object.values(page.viewports)) {
+          for (const issue of viewport.issues) {
+            // dedupe by id so merged findings aren't written 3x (one per viewport slot)
+            if (!allFindings.some((f) => f.id === issue.id)) allFindings.push(issue);
+          }
+        }
+      }
+      await saveRun(runId, {
+        runId,
+        url: manifest.baseUrl,
+        timestamp: manifest.timestamp,
+        findings: allFindings,
+        summary: summarize(allFindings),
+      });
+      sse.sendProgress(`Report saved to /report/${runId}`);
+    }
+  } catch (err) {
+    sse.sendProgress(`Warning: failed to save report: ${(err as Error).message}`);
   }
 
   sse.sendProgress("Audit complete.", totalRoutes, totalRoutes);

@@ -116,6 +116,31 @@ Evaluate whether the UI accounts for all necessary states:
 - **Success confirmation** — Saved/copied/submitted actions should confirm visually.
 - **State labels** — Toggles should have visible state labels (on/off), not rely on color only.
 
+## 12. Dark Patterns / Deceptive Design
+
+Flag any pattern that manipulates users into decisions against their interest. Use category "usability" and set `principle` to "Dark Pattern — <Name>" using the taxonomy below. Any confirmshaming, forced continuity, hidden-cost, sneak-into-basket, privacy-zuckering, or roach-motel pattern is **critical**. Misdirection, bait-and-switch, trick questions, fake urgency / scarcity, disguised ads, and forced account creation are **major**.
+
+Patterns to detect (non-exhaustive):
+- **Confirmshaming** — Decline button uses guilt-inducing language (e.g. "No thanks, I hate saving money").
+- **Sneak into basket** — Items, add-ons, donations, or warranties added to the cart without explicit consent.
+- **Forced continuity** — Subscription silently auto-renews after a trial with no clear cancellation or reminder.
+- **Hidden costs** — Fees, taxes, or surcharges only revealed at the final checkout step.
+- **Privacy Zuckering** — UI tricks users into sharing more personal data than they intended, or into making private data public.
+- **Roach motel** — Easy to sign up or subscribe, deliberately difficult to cancel or delete.
+- **Misdirection** — Visual attention pulled toward the business-favored path while the user-friendly option is de-emphasized.
+- **Bait-and-switch** — An action produces a result other than the one advertised (e.g. "X" button triggers an install).
+- **Disguised ads** — Promotional content styled to look like native UI, system messages, or editorial content.
+- **Friend spam** — Contact access requested under one pretext, then used to send invitations on the user's behalf.
+- **Trick questions** — Double negatives or swapped opt-in / opt-out phrasing that inverts user intent.
+- **Fake urgency / scarcity** — Countdown timers, "only N left!", or "X people viewing" signals with no real basis.
+- **Forced account creation** — Mandatory signup for a one-off purchase or action with no guest alternative.
+
+For each detection:
+- Cite the specific screenshot evidence in `description` (quote the button copy, name the pre-checked box, describe the hidden fee).
+- Name the specific pattern in `principle` using the format `Dark Pattern — <Name>` (e.g. `Dark Pattern — Confirmshaming`).
+- In `suggested_fix` describe the user-respecting alternative with concrete copy or markup (e.g. "Replace 'No thanks, I hate saving money' with 'No thanks'", "Default the newsletter checkbox to unchecked", "Move the $8 shipping fee into the product detail page summary").
+- Keep `category` = "usability" so these findings cluster alongside other heuristic violations.
+
 ## Response Format
 
 You MUST respond with valid JSON only — no markdown, no code fences, no extra text. Return a JSON object with a single "issues" array. Each issue must have exactly these fields:

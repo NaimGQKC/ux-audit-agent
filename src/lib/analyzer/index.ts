@@ -14,6 +14,8 @@ export interface BoundingBox {
   height: number;
 }
 
+export type IssueSource = "llm" | "axe" | "lighthouse" | "tokens";
+
 export interface UXIssue {
   id: string;
   title: string;
@@ -28,6 +30,19 @@ export interface UXIssue {
   affected_viewports: ViewportLabel[];
   recommendation: string;
   bounding_box: BoundingBox;
+  // --- Optional deterministic-layer enrichment ------------------------------
+  /** Where this issue came from. Default "llm" for backward compat. */
+  source?: IssueSource;
+  /** WCAG references (e.g. ["WCAG 1.4.3"]). Populated from axe/Lighthouse tags. */
+  wcag_ref?: string[];
+  /** CSS selector for the affected element (axe). */
+  element_selector?: string;
+  /** Filename of the annotated screenshot backing this issue. */
+  evidence_screenshot?: string;
+  /** Proposed code diff (LLM-generated for deterministic findings). */
+  remediation_diff?: string;
+  /** Rule id from the source (e.g. "color-contrast" or Lighthouse audit id). */
+  rule_id?: string;
 }
 
 export interface AnalysisResult {
@@ -41,6 +56,7 @@ export interface AnalysisResult {
 const VALID_SEVERITIES = new Set(["critical", "major", "minor"]);
 const VALID_CATEGORIES = new Set(["accessibility", "usability", "visual", "responsive"]);
 const VALID_VIEWPORTS = new Set<string>(["mobile", "tablet", "desktop"]);
+const VALID_SOURCES = new Set<string>(["llm", "axe", "lighthouse", "tokens"]);
 
 /**
  * Validate raw JSON data against the AnalysisResult schema.
@@ -104,13 +120,35 @@ export function validateAnalysisResult(data: unknown): AnalysisResult {
       );
     }
 
+    // bounding_box is required for LLM-sourced issues (the vision model is
+    // expected to place a box around the flagged region) but optional for
+    // deterministic-source issues (axe/Lighthouse don't emit pixel coords).
+    // Default to a zero box so downstream consumers can keep rendering.
     const bb = item.bounding_box as Record<string, unknown> | undefined;
-    if (!bb || typeof bb !== "object") {
+    const rawSource = typeof item.source === "string" && VALID_SOURCES.has(item.source)
+      ? (item.source as IssueSource)
+      : "llm";
+
+    let bounding_box: BoundingBox;
+    if (bb && typeof bb === "object"
+      && typeof bb.x === "number" && typeof bb.y === "number"
+      && typeof bb.width === "number" && typeof bb.height === "number") {
+      bounding_box = { x: bb.x, y: bb.y, width: bb.width, height: bb.height };
+    } else if (rawSource !== "llm") {
+      // Deterministic sources — zero-box fallback
+      bounding_box = { x: 0, y: 0, width: 0, height: 0 };
+    } else {
       throw new Error(`Issue ${i}: missing or invalid "bounding_box"`);
     }
-    if (typeof bb.x !== "number" || typeof bb.y !== "number" || typeof bb.width !== "number" || typeof bb.height !== "number") {
-      throw new Error(`Issue ${i}: bounding_box must have numeric x, y, width, height`);
-    }
+
+    // Optional deterministic fields — tolerate unexpected shapes by dropping.
+    const wcag_ref = Array.isArray(item.wcag_ref)
+      ? (item.wcag_ref.filter((s) => typeof s === "string") as string[])
+      : undefined;
+    const element_selector = typeof item.element_selector === "string" ? item.element_selector : undefined;
+    const evidence_screenshot = typeof item.evidence_screenshot === "string" ? item.evidence_screenshot : undefined;
+    const remediation_diff = typeof item.remediation_diff === "string" ? item.remediation_diff : undefined;
+    const rule_id = typeof item.rule_id === "string" ? item.rule_id : undefined;
 
     return {
       id: item.id,
@@ -125,12 +163,13 @@ export function validateAnalysisResult(data: unknown): AnalysisResult {
       acceptance_criteria: item.acceptance_criteria,
       affected_viewports: viewports,
       recommendation: item.recommendation,
-      bounding_box: {
-        x: bb.x,
-        y: bb.y,
-        width: bb.width,
-        height: bb.height,
-      },
+      bounding_box,
+      source: rawSource,
+      ...(wcag_ref && { wcag_ref }),
+      ...(element_selector && { element_selector }),
+      ...(evidence_screenshot && { evidence_screenshot }),
+      ...(remediation_diff && { remediation_diff }),
+      ...(rule_id && { rule_id }),
     };
   });
 

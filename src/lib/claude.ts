@@ -5,14 +5,14 @@
  * through the user's Claude Code subscription at zero additional API cost.
  *
  * Features:
- * - Configurable timeout (default 3 minutes)
+ * - Configurable timeout (default 6 minutes)
  * - Retry with exponential backoff for transient failures
  * - 10 MB max buffer for large responses
  */
 
 import { execFile } from "node:child_process";
 
-const DEFAULT_TIMEOUT_MS = 180_000; // 3 minutes
+const DEFAULT_TIMEOUT_MS = 360_000; // 6 minutes — vision analysis of multiple screenshots can be slow
 const MAX_BUFFER = 10 * 1024 * 1024; // 10 MB
 const RETRY_ATTEMPTS = 1; // 1 retry = 2 total attempts
 const RETRY_BASE_DELAY_MS = 2_000; // 2 seconds base delay
@@ -40,7 +40,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 export interface ClaudeOptions {
-  /** Timeout in ms. Default: 180 000 (3 minutes). */
+  /** Timeout in ms. Default: 360 000 (6 minutes). */
   timeoutMs?: number;
   /** Label for log messages. */
   label?: string;
@@ -63,7 +63,7 @@ export async function checkClaudeHealth(): Promise<{ ok: boolean; error?: string
  * Run `claude -p` (print mode), piping the given prompt via stdin.
  * Returns the raw stdout output.
  *
- * Includes a 3-minute timeout and 1 retry with exponential backoff
+ * Includes a 6-minute timeout and 1 retry with exponential backoff
  * for transient failures.
  */
 export async function runClaudePrint(

@@ -15,6 +15,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { runClaudePrint } from "../claude";
+import type { AxeFinding } from "../deterministic/axe";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -25,12 +26,22 @@ export interface AnalyzeOptions {
   prdContext?: string;
   /** Optional GitHub repo context inlined at the top of the prompt. */
   repoContext?: string;
-  /** Screenshots per Claude call. Default: 6. */
+  /** Screenshots per Claude call. Default: 3. */
   batchSize?: number;
   /** Max parallel Claude calls. Default: 3. */
   concurrency?: number;
   /** Progress callback fired before each batch. */
   onProgress?: (msg: string, current: number, total: number) => void;
+  /** Label for logging / diagnostics. */
+  label?: string;
+  /**
+   * Axe findings keyed by screenshot BASENAME (e.g. "home_desktop.png").
+   * When present, each screenshot's findings are injected into the prompt as
+   * a `CONFIRMED_ISSUES` block with an explicit "do not re-report these"
+   * instruction so the LLM focuses on the ~43% of WCAG issues axe misses
+   * (focus order, heading hierarchy, cognitive load, semantic alt relevance).
+   */
+  axeFindingsByScreenshot?: Record<string, AxeFinding[]>;
 }
 
 export interface AnalyzeResult {
@@ -46,7 +57,7 @@ export interface AnalyzeResult {
 // Constants
 // ---------------------------------------------------------------------------
 
-const DEFAULT_BATCH_SIZE = 6;
+const DEFAULT_BATCH_SIZE = 3;
 const DEFAULT_CONCURRENCY = 3;
 const PROMPT_FILE_PATH = path.join(
   process.cwd(),
@@ -65,6 +76,7 @@ function buildAnalysisPrompt(
   basePrompt: string,
   prdContext?: string,
   repoContext?: string,
+  axeFindingsByScreenshot?: Record<string, AxeFinding[]>,
 ): string {
   let prompt = "";
 
@@ -77,6 +89,26 @@ function buildAnalysisPrompt(
   }
 
   prompt += basePrompt;
+
+  if (axeFindingsByScreenshot && Object.keys(axeFindingsByScreenshot).length > 0) {
+    const perScreenshot: string[] = [];
+    for (const png of pngs) {
+      const base = path.basename(png);
+      const findings = axeFindingsByScreenshot[base] ?? [];
+      if (findings.length === 0) continue;
+      const items = findings
+        .slice(0, 25)
+        .map((f) => {
+          const wcag = f.wcagRefs.length > 0 ? ` [${f.wcagRefs.join(", ")}]` : "";
+          return `  - ${f.severity.toUpperCase()} · ${f.ruleId}${wcag} · ${f.selector} — ${f.help}`;
+        })
+        .join("\n");
+      perScreenshot.push(`${base}:\n${items}`);
+    }
+    if (perScreenshot.length > 0) {
+      prompt += `\n\n---\n\nCONFIRMED_ISSUES (already detected by axe-core — DO NOT re-report these):\n\n${perScreenshot.join("\n\n")}\n\nThe above issues are authoritative and will be included in the final report automatically. Your job is to surface the ~43% of WCAG and UX issues that axe CANNOT detect: focus order, heading hierarchy, cognitive load, semantic alt-text relevance, visual hierarchy, spacing rhythm, microcopy, dark patterns, Gestalt/layout issues, and state-matrix gaps (loading/empty/error). Skip anything already listed above.`;
+    }
+  }
 
   prompt += `\n\n---\n\nAnalyze each of the following screenshot image files for UX and accessibility issues. Read each file listed below, then evaluate it against all the criteria described above.\n\nScreenshot files:\n`;
   for (const png of pngs) {
@@ -233,7 +265,13 @@ export async function analyzeScreenshotsDir(
     const human = `batch ${task.index + 1}/${tasks.length} (${task.pngs.length} screenshot${task.pngs.length === 1 ? "" : "s"})`;
     opts.onProgress?.(`Analyzing ${human}...`, task.index, tasks.length);
 
-    const prompt = buildAnalysisPrompt(task.pngs, basePrompt, opts.prdContext, opts.repoContext);
+    const prompt = buildAnalysisPrompt(
+      task.pngs,
+      basePrompt,
+      opts.prdContext,
+      opts.repoContext,
+      opts.axeFindingsByScreenshot,
+    );
 
     try {
       const raw = await runClaudePrint(prompt, { label: `analyze-${task.index + 1}` });
@@ -281,4 +319,53 @@ export async function analyzeScreenshotsDir(
     failedBatches,
     errors,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Per-page analysis (for progressive scan)
+// ---------------------------------------------------------------------------
+
+/**
+ * Analyze an explicit list of screenshot file paths in a single Claude call.
+ * Used by the progressive-scan pipeline to analyze one page's 3-viewport
+ * screenshots immediately instead of waiting for the full site.
+ *
+ * Returns the same AnalyzeResult shape as `analyzeScreenshotsDir` so the
+ * route can reuse the same mapping logic.
+ */
+export async function analyzeScreenshots(
+  pngs: string[],
+  opts: AnalyzeOptions = {},
+): Promise<AnalyzeResult> {
+  if (pngs.length === 0) {
+    return { screenshots: {}, totalBatches: 0, failedBatches: 0, errors: [] };
+  }
+
+  if (!fs.existsSync(PROMPT_FILE_PATH)) {
+    throw new Error(`Analyzer prompt not found at ${PROMPT_FILE_PATH}`);
+  }
+  const basePrompt = fs.readFileSync(PROMPT_FILE_PATH, "utf-8");
+
+  const prompt = buildAnalysisPrompt(
+    pngs,
+    basePrompt,
+    opts.prdContext,
+    opts.repoContext,
+    opts.axeFindingsByScreenshot,
+  );
+
+  opts.onProgress?.("Analyzing...", 0, 1);
+
+  try {
+    const raw = await runClaudePrint(prompt, { label: opts.label ?? "analyze-page" });
+    const screenshots = parseAnalysisResponse(raw);
+    return { screenshots, totalBatches: 1, failedBatches: 0, errors: [] };
+  } catch (err) {
+    return {
+      screenshots: {},
+      totalBatches: 1,
+      failedBatches: 1,
+      errors: [{ batchIndex: 0, reason: (err as Error).message }],
+    };
+  }
 }

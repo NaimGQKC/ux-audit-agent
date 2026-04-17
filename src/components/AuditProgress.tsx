@@ -181,7 +181,7 @@ export function InteractiveLoginPanel({
           <p className="text-sm text-blue-800">
             {phase === "sso_redirect"
               ? "You were redirected to an SSO provider. Complete your login in the browser window — we\u2019ll detect when you\u2019re back and continue automatically."
-              : "A browser window has opened at your target URL. Log in there, then click the button below to start crawling."}
+              : "A browser window has opened at your target URL. If you can\u2019t see it, check your taskbar (it may be behind a fullscreen app). Log in there, then click the button below. You have up to 15 minutes."}
           </p>
         </div>
       </div>
