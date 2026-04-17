@@ -29,6 +29,7 @@ import {
   Trash,
   KeyRound,
   MousePointerClick,
+  SlidersHorizontal,
 } from "lucide-react";
 import type { AuditPhase, UploadedScreenshot } from "@/types/audit";
 
@@ -256,7 +257,7 @@ export function AuditForm({
       <CollapsiblePanel
         open={advancedOpen}
         onToggle={() => setAdvancedOpen(!advancedOpen)}
-        icon={<ChevronDown className={`w-4 h-4 transition-transform ${advancedOpen ? "" : "-rotate-90"}`} />}
+        icon={<SlidersHorizontal className="w-4 h-4" />}
         title="Advanced options"
         badge={advancedBadge}
       >
