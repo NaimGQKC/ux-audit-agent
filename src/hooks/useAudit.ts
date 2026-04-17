@@ -666,7 +666,14 @@ export function useAudit() {
       setPages((prev) =>
         prev.map((p) => {
           if (p.url !== pageUrl) return p;
-          return { ...p, issues: p.issues.map((i) => (i.id === issueId ? { ...i, ...patch } : i)) };
+          const patched = p.issues.map((i) =>
+            i.id === issueId ? { ...i, ...patch } : i,
+          );
+          // Keep severity ordering stable after rewrites or severity edits.
+          // Without this, a rewrite that bumps severity would silently leave
+          // the card (and its pin number) out of order.
+          const needsSort = patch.severity !== undefined;
+          return { ...p, issues: needsSort ? sortBySeverity(patched) : patched };
         }),
       );
     },

@@ -274,6 +274,8 @@ function routeFromFile(file: string, cwd: string): string | null {
     const p = pagesMatch[1];
     // Skip Next internals.
     if (p === "_app" || p === "_document" || p === "_error") return null;
+    // API routes have no UI — don't try to audit them.
+    if (p === "api" || p.startsWith("api/")) return null;
     // Dynamic segment → bail.
     if (p.includes("[")) return null;
     if (p === "index") return "/";

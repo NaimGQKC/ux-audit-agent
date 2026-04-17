@@ -325,13 +325,16 @@ export default function DashboardPage() {
           const viewport = (audit.activeViewports[page.url] ?? "desktop") as ViewportName;
           const screenshotView = audit.activeScreenshotView[page.url] ?? "original";
 
-          // Pin numbering mirrors AnnotatedScreenshot's visibleIssues filter
-          // (non-dismissed, has bounding_box). Issues are already sorted by
-          // severity in parseSSEResult, so pin #1 is the most severe.
+          // Pin numbers are assigned across ALL issues with a bounding_box,
+          // including dismissed ones, so dismissing a pin in the middle of
+          // the list doesn't silently renumber the rest (pin #3 should stay
+          // pin #3 — gaps are preferable to shifts). Dismissed issues still
+          // receive a number so the card label stays referenceable, but
+          // AnnotatedScreenshot filters them out of the rendered pins.
           const pinNumberById = new Map<string, number>();
           let nextPin = 0;
           for (const issue of page.issues) {
-            if (issue.status !== "dismissed" && issue.bounding_box) {
+            if (issue.bounding_box) {
               pinNumberById.set(issue.id, ++nextPin);
             }
           }

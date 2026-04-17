@@ -117,16 +117,11 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // createMultipleTickets preserves request order (sequential + delay),
-  // so align results back to payloads positionally. `failed` entries appear
-  // in the order the loop hit them; we fall back to title-match if needed.
-  const titleToId = new Map<string, string>();
-  for (const issue of body.issues) {
-    if (issue.id) titleToId.set(issue.title, issue.id);
-  }
-
+  // Asana module echoes the original issue.id back on each task so we can
+  // map results to payloads even when intermediate issues fail. No
+  // title-based lookup: two issues with identical titles used to collide.
   const createdById = result.created.map((task) => ({
-    issueId: titleToId.get(stripTaskPrefix(task.name)) ?? null,
+    issueId: task.id ?? null,
     taskId: task.gid,
     name: task.name,
     url: task.url,
@@ -145,10 +140,4 @@ export async function POST(request: NextRequest) {
       failed: result.failed.length,
     },
   });
-}
-
-// Asana task names are prefixed with "[UX-AUDIT · <emoji> <priority>] ".
-// Strip that so we can match back to the raw issue title.
-function stripTaskPrefix(name: string): string {
-  return name.replace(/^\[UX-AUDIT\s·\s[^\]]+\]\s*/, "");
 }

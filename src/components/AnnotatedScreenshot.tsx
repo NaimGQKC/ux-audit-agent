@@ -37,9 +37,11 @@ const PIN_RING: Record<AuditIssue["severity"], string> = {
  *    parent can open the associated Asana ticket (once pushed) or scroll to
  *    the matching IssueCard.
  *
- * The `issues` array is expected to be pre-sorted by severity; pin numbers
- * are assigned as `visibleIssues.indexOf(issue) + 1`, so #1 is always the
- * most severe on the page.
+ * Pin numbers must be stable across dismissals — a user who memorizes
+ * "fix pin 3" shouldn't see it become pin 2 after dismissing something above
+ * it. So numbering is computed across ALL issues with a bounding_box (sorted
+ * by severity in parseSSEResult), then dismissed pins are filtered from the
+ * render. Gaps in the sequence are intentional.
  */
 export function AnnotatedScreenshot({
   page,
@@ -61,6 +63,13 @@ export function AnnotatedScreenshot({
   const src = page.screenshots[viewport];
   const dims = VIEWPORT_DIMENSIONS[viewport];
   const scale = maxWidth / dims.w;
+
+  // Assign pin numbers first (stable across dismissal), then filter for render.
+  const pinNumberById = new Map<string, number>();
+  let nextPin = 0;
+  for (const issue of issues) {
+    if (issue.bounding_box) pinNumberById.set(issue.id, ++nextPin);
+  }
   const visibleIssues = issues.filter(
     (i) => i.status !== "dismissed" && i.bounding_box,
   );
@@ -86,7 +95,7 @@ export function AnnotatedScreenshot({
         style={{ maxWidth, maxHeight }}
         draggable={false}
       />
-      {visibleIssues.map((issue, index) => {
+      {visibleIssues.map((issue) => {
         const box = issue.bounding_box!;
         const left = box.x * scale;
         const top = box.y * scale;
@@ -95,7 +104,9 @@ export function AnnotatedScreenshot({
         const active = hoveredIssueId === issue.id;
         const fill = PIN_FILL[issue.severity];
         const ring = PIN_RING[issue.severity];
-        const pinNumber = index + 1;
+        // Stable numbering — see comment above. `!` is safe because every
+        // bounding_box issue was added to the map in the preceding loop.
+        const pinNumber = pinNumberById.get(issue.id)!;
         const hasAsana = Boolean(issue.asanaUrl);
         const label = hasAsana
           ? `Issue ${pinNumber}: ${issue.title} — open Asana ticket`

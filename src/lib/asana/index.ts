@@ -35,12 +35,23 @@ export interface UXIssue {
   affected_viewports: ViewportLabel[];
   recommendation: string;
   assignee?: string;
+  /** Optional enrichment — surfaced into the task title / body / custom fields. */
+  id?: string;
+  source?: "llm" | "axe" | "lighthouse" | "tokens";
+  wcag_ref?: string[];
+  rule_id?: string;
+  page_url?: string;
+  run_id?: string;
+  evidence_screenshot?: string;
 }
 
 export interface AsanaTaskResult {
   gid: string;
   name: string;
   url: string;
+  /** Echoes `UXIssue.id` when supplied so callers can map results back to
+   * the originating issue even when the batch has intermediate failures. */
+  id?: string;
 }
 
 export interface AsanaBatchResult {
@@ -160,7 +171,21 @@ function mapPriority(severity: Severity): AsanaPriority {
 
 function formatTaskName(issue: UXIssue): string {
   const priority = mapPriority(issue.severity);
-  return `[${priority.toUpperCase()}] ${issue.title}`;
+  const emoji = SEVERITY_EMOJI[issue.severity];
+  return `[UX-AUDIT · ${emoji} ${priority}] ${issue.title}`;
+}
+
+/**
+ * Build a Langfuse trace link from LANGFUSE_TRACE_URL_TEMPLATE.
+ * Template supports `{runId}` and `{issueId}` placeholders.
+ * Returns null if no template or no runId.
+ */
+function buildLangfuseLink(issue: UXIssue): string | null {
+  const template = process.env.LANGFUSE_TRACE_URL_TEMPLATE;
+  if (!template || !issue.run_id) return null;
+  return template
+    .replace(/\{runId\}/g, encodeURIComponent(issue.run_id))
+    .replace(/\{issueId\}/g, encodeURIComponent(issue.id ?? ""));
 }
 
 function formatTaskHtmlNotes(issue: UXIssue): string {
@@ -174,12 +199,32 @@ function formatTaskHtmlNotes(issue: UXIssue): string {
   const emoji = SEVERITY_EMOJI[issue.severity];
   const viewports = (issue.affected_viewports ?? []).join(", ") || "all";
 
+  const wcagLevel = (issue.wcag_ref ?? []).find((r) => /AA|AAA|A$/i.test(r)) ?? "";
+  const source = issue.source ?? "llm";
+  const langfuseLink = buildLangfuseLink(issue);
+
   const metaItems = [
     `<li>Severity: <strong>${emoji} ${escapeHtml(issue.severity)}</strong> (Priority: ${escapeHtml(priority)})</li>`,
     `<li>Category: <strong>${escapeHtml(issue.category)}</strong></li>`,
+    `<li>Source: <strong>${escapeHtml(source)}</strong>${issue.rule_id ? ` (rule: <code>${escapeHtml(issue.rule_id)}</code>)` : ""}</li>`,
     `<li>Affected viewports: <strong>${escapeHtml(viewports)}</strong></li>`,
     issue.principle
       ? `<li>Principle: <strong>${escapeHtml(issue.principle)}</strong></li>`
+      : "",
+    issue.wcag_ref && issue.wcag_ref.length > 0
+      ? `<li>WCAG: <strong>${escapeHtml(issue.wcag_ref.join(", "))}</strong>${wcagLevel ? ` (level ${escapeHtml(wcagLevel)})` : ""}</li>`
+      : "",
+    issue.page_url
+      ? `<li>Page: <a href="${escapeHtml(issue.page_url)}">${escapeHtml(issue.page_url)}</a></li>`
+      : "",
+    issue.run_id
+      ? `<li>Audit run: <code>${escapeHtml(issue.run_id)}</code></li>`
+      : "",
+    issue.id
+      ? `<li>Issue ID: <code>${escapeHtml(issue.id)}</code> <em>(auto-closes when this issue no longer appears in a subsequent audit run)</em></li>`
+      : "",
+    langfuseLink
+      ? `<li>Trace: <a href="${escapeHtml(langfuseLink)}">Langfuse trace</a></li>`
       : "",
   ].filter(Boolean).join("");
 
@@ -237,6 +282,7 @@ export async function createTicket(issue: UXIssue): Promise<AsanaTaskResult> {
     gid: result.data.gid,
     name: result.data.name,
     url: result.data.permalink_url,
+    ...(issue.id ? { id: issue.id } : {}),
   };
 }
 
