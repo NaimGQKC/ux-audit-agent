@@ -1,0 +1,21 @@
+{
+  "url_or_file": "./index.html",
+  "description": "Form inputs with placeholder-only — no <label>, aria-label, or aria-labelledby.",
+  "must_match": [
+    {
+      "category": "accessibility",
+      "keyword_any": [
+        "label",
+        "labels or instructions",
+        "WCAG 4.1.2",
+        "4.1.2",
+        "WCAG 3.3.2",
+        "3.3.2",
+        "name, role",
+        "accessible name",
+        "placeholder"
+      ],
+      "min_severity": "major"
+    }
+  ]
+}

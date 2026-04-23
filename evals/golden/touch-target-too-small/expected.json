@@ -1,0 +1,22 @@
+{
+  "url_or_file": "./index.html",
+  "description": "20x20px buttons placed adjacent to each other — fails WCAG 2.5.8 target size and Fitts's Law guidance.",
+  "must_match": [
+    {
+      "keyword_any": [
+        "touch target",
+        "target size",
+        "Fitts",
+        "Fitts's Law",
+        "tap target",
+        "click target",
+        "WCAG 2.5.8",
+        "2.5.8",
+        "44",
+        "24x24",
+        "too small"
+      ],
+      "min_severity": "major"
+    }
+  ]
+}

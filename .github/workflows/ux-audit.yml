@@ -1,0 +1,95 @@
+name: UX audit
+
+# Triggers:
+#   - workflow_call — reusable from consumer repos via
+#                     `uses: NaimGQKC/ux-audit-agent/.github/workflows/ux-audit.yml@main`
+# No pull_request trigger: this repo has no preview deployment, so there is
+# no URL to hand to the audit. Consumer repos wire up their own trigger that
+# waits for the preview URL, then calls this workflow.
+on:
+  workflow_call:
+    inputs:
+      preview_url:
+        description: URL of the deployed PR preview to audit.
+        required: true
+        type: string
+      fail_on:
+        description: Severity threshold that fails the job — critical|major|minor|none.
+        required: false
+        type: string
+        default: none
+    secrets:
+      claude_api_key:
+        description: Anthropic API key used by the Claude CLI.
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  audit:
+    name: Audit preview URL
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      # The audit step can exit nonzero when --fail-on trips. We still want
+      # the comment to post so PR authors get signal — continue-on-error
+      # lets the workflow flow past, then we fail explicitly at the end.
+      - name: Run UX audit
+        id: audit
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.claude_api_key }}
+        run: |
+          npm run audit -- \
+            --url "${{ inputs.preview_url }}" \
+            --out findings.json \
+            --fail-on "${{ inputs.fail_on || 'none' }}"
+
+      - name: Upload findings artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ux-audit-findings
+          path: findings.json
+          if-no-files-found: warn
+
+      - name: Generate PR comment body
+        if: always() && github.event.pull_request.number != ''
+        run: |
+          npm exec tsx src/cli/comment.ts -- \
+            --findings findings.json \
+            --pr "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            > comment.md
+
+      - name: Post sticky PR comment
+        if: always() && github.event.pull_request.number != ''
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: ux-audit-agent
+          path: comment.md
+
+      # Propagate the audit step's exit code so a failing --fail-on threshold
+      # still turns the PR check red even though we used continue-on-error.
+      - name: Fail job if audit tripped threshold
+        if: steps.audit.outcome == 'failure'
+        run: |
+          echo "Audit failed its severity threshold — see the sticky PR comment."
+          exit 1

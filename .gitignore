@@ -38,9 +38,23 @@ next-env.d.ts
 # crawler output
 /screenshots
 
+# audit cache
+/.ux-audit-cache
+
+# hosted report viewer runs
+/.audit-runs/
+/.audit-projects/
+
 # agent skills (reinstall via npx skills add)
 /.agents
 /.windsurf
 /skills
 /.claude/skills
+/.claude/scheduled_tasks.lock
 skills-lock.json
+
+# QA artifacts
+qa-smoke-report.html
+
+# Ad-hoc scan/smoke-test outputs dropped at repo root
+/scan-*.json

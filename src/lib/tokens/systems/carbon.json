@@ -1,0 +1,30 @@
+{
+  "name": "IBM Carbon",
+  "license": "Apache-2.0",
+  "source": "https://carbondesignsystem.com/guidelines (productive type scale, spacing scale 01-13 in px, layout radius, and gray/blue theme ramps)",
+  "baseUnit": 8,
+  "tokens": {
+    "fontSizes": [12, 14, 16, 18, 20, 24, 28, 32, 36, 42, 48, 54, 60],
+    "spacing": [0, 2, 4, 8, 12, 16, 24, 32, 40, 48, 64, 80, 96, 160],
+    "radius": [0, 2, 4, 8, 12, 16],
+    "colors": [
+      "#000000",
+      "#ffffff",
+      "#161616",
+      "#262626",
+      "#393939",
+      "#525252",
+      "#6f6f6f",
+      "#8d8d8d",
+      "#a8a8a8",
+      "#c6c6c6",
+      "#e0e0e0",
+      "#f4f4f4",
+      "#0f62fe",
+      "#0043ce",
+      "#002d9c",
+      "#da1e28",
+      "#198038"
+    ]
+  }
+}

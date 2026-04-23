@@ -1,0 +1,11 @@
+{
+    "mcpServers": {
+        "ux-audit": {
+            "command": "npx",
+            "args": [
+                "tsx",
+                "src/mcp/server-stdio.ts"
+            ]
+        }
+    }
+}

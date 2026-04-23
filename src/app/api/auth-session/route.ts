@@ -1,44 +1,53 @@
 import { NextRequest, NextResponse } from "next/server";
-import { chromium, type Browser, type BrowserContext, type Cookie } from "playwright";
+import {
+  launchHeadedPersistentBrowser,
+  extractCookiesAndClose,
+  checkSSOReturn,
+  setReadySignal,
+  clearBrowserProfile,
+  hasPersistedSession,
+} from "@/lib/crawler";
+import {
+  requireApiAuth,
+  sanitizeError,
+  logError,
+  validatePublicUrl,
+  validateLocalUrl,
+} from "@/lib/security";
+
+// Session IDs are UUIDs we generate. Reject anything else before using them.
+const SESSION_ID_PATTERN = /^[a-zA-Z0-9_-]{8,128}$/;
 
 // ---------------------------------------------------------------------------
-// In-memory session store (never persisted to disk)
+// GET /api/auth-session  — check if a persisted session exists on disk
 // ---------------------------------------------------------------------------
 
-interface AuthSession {
-  browser: Browser;
-  context: BrowserContext;
-  authUrl: string;
-  createdAt: number;
-}
-
-const sessions = new Map<string, AuthSession>();
-
-// Auto-cleanup sessions older than 10 minutes
-function cleanupStaleSessions() {
-  const now = Date.now();
-  const ids = Array.from(sessions.keys());
-  for (const id of ids) {
-    const session = sessions.get(id)!;
-    if (now - session.createdAt > 10 * 60 * 1000) {
-      session.browser.close().catch(() => {});
-      sessions.delete(id);
-    }
-  }
+export async function GET(request: NextRequest) {
+  const denied = requireApiAuth(request);
+  if (denied) return denied;
+  return NextResponse.json({ hasSession: hasPersistedSession() });
 }
 
 // ---------------------------------------------------------------------------
 // POST /api/auth-session
-// Action is determined by the "action" field in the request body:
-//   - "start"    → Launch headed browser at auth URL
-//   - "check"    → Poll if user has authenticated
-//   - "complete" → Extract cookies, close browser, return cookies
+// Actions:
+//   "start"         → Launch headed persistent browser at URL
+//   "check-sso"     → Poll: has user returned to the original origin?
+//   "complete"       → Extract cookies and close the headed browser
+//   "proceed"        → Signal "I'm logged in" (unblocks the audit SSE stream)
+//   "clear-profile"  → Delete the persisted browser profile from disk
 // ---------------------------------------------------------------------------
 
 export async function POST(request: NextRequest) {
-  cleanupStaleSessions();
+  const denied = requireApiAuth(request);
+  if (denied) return denied;
 
-  let body: { action: string; authUrl?: string; sessionId?: string };
+  let body: {
+    action: string;
+    url?: string;
+    sessionId?: string;
+  };
+
   try {
     body = await request.json();
   } catch {
@@ -48,139 +57,99 @@ export async function POST(request: NextRequest) {
   const { action } = body;
 
   // -----------------------------------------------------------------------
-  // START — Launch headed Playwright browser
+  // START — Launch headed persistent browser
   // -----------------------------------------------------------------------
   if (action === "start") {
-    const { authUrl } = body;
-    if (!authUrl) {
-      return NextResponse.json({ error: "Missing authUrl" }, { status: 400 });
+    const { url } = body;
+    if (!url) {
+      return NextResponse.json({ error: "Missing url" }, { status: 400 });
+    }
+
+    // Validate URL: block SSRF targets in production; permit loopback in dev so
+    // a developer can auth-session their own `npm run dev`.
+    let validation = validatePublicUrl(url);
+    if (!validation.ok && process.env.NODE_ENV !== "production") {
+      // Dev-only fallback: allow loopback dev servers.
+      const localCheck = validateLocalUrl(url);
+      if (localCheck.ok) validation = localCheck;
+    }
+    if (!validation.ok) {
+      return NextResponse.json({ error: validation.error }, { status: 400 });
     }
 
     try {
-      const browser = await chromium.launch({
-        headless: false,
-        args: [
-          `--window-size=1280,800`,
-          `--window-position=100,100`,
-        ],
-      });
-
-      const context = await browser.newContext({
-        viewport: { width: 1280, height: 800 },
-      });
-
-      const page = await context.newPage();
-      await page.goto(authUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
-
-      const sessionId = `auth-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      sessions.set(sessionId, {
-        browser,
-        context,
-        authUrl,
-        createdAt: Date.now(),
-      });
-
+      const { sessionId } = await launchHeadedPersistentBrowser(validation.url!);
       return NextResponse.json({ sessionId });
     } catch (err) {
+      logError("[auth-session/start]", err);
       return NextResponse.json(
-        { error: `Failed to launch browser: ${(err as Error).message}` },
+        { error: sanitizeError(err, "Failed to launch browser.") },
         { status: 500 }
       );
     }
   }
 
   // -----------------------------------------------------------------------
-  // CHECK — Poll authentication status
+  // CHECK-SSO — Poll: has the user navigated back to the original origin?
   // -----------------------------------------------------------------------
-  if (action === "check") {
+  if (action === "check-sso") {
     const { sessionId } = body;
-    if (!sessionId) {
-      return NextResponse.json({ error: "Missing sessionId" }, { status: 400 });
-    }
-
-    const session = sessions.get(sessionId);
-    if (!session) {
-      return NextResponse.json({ error: "Session not found or expired" }, { status: 404 });
+    if (!sessionId || !SESSION_ID_PATTERN.test(sessionId)) {
+      return NextResponse.json({ error: "Missing or invalid sessionId" }, { status: 400 });
     }
 
     try {
-      const pages = session.context.pages();
-      const activePage = pages[pages.length - 1] || pages[0];
-
-      if (!activePage) {
-        return NextResponse.json({ authenticated: false });
-      }
-
-      const currentUrl = activePage.url();
-      const cookies = await session.context.cookies();
-
-      // Heuristics for "user has logged in":
-      // 1. URL has navigated away from the auth URL
-      const urlChanged = currentUrl !== session.authUrl &&
-        !currentUrl.toLowerCase().includes("/login") &&
-        !currentUrl.toLowerCase().includes("/signin") &&
-        !currentUrl.toLowerCase().includes("/sign-in") &&
-        !currentUrl.toLowerCase().includes("/auth/") &&
-        !currentUrl.toLowerCase().includes("/sso/");
-
-      // 2. No more password fields visible
-      const hasPasswordField = await activePage
-        .$$eval('input[type="password"]', (inputs) => inputs.length > 0)
-        .catch(() => false);
-
-      // 3. Auth-related cookies appeared (common session cookie names)
-      const hasSessionCookies = cookies.some((c) => {
-        const name = c.name.toLowerCase();
-        return (
-          name.includes("session") ||
-          name.includes("token") ||
-          name.includes("auth") ||
-          name.includes("sid") ||
-          name.includes("jwt") ||
-          name.includes("_identity")
-        );
-      });
-
-      const authenticated = urlChanged && !hasPasswordField && (hasSessionCookies || cookies.length > 0);
-
-      return NextResponse.json({ authenticated });
+      const result = await checkSSOReturn(sessionId);
+      return NextResponse.json(result);
     } catch (err) {
+      logError("[auth-session/check-sso]", err);
       return NextResponse.json(
-        { error: `Check failed: ${(err as Error).message}` },
-        { status: 500 }
+        { error: sanitizeError(err, "Session not found.") },
+        { status: 404 }
       );
     }
   }
 
   // -----------------------------------------------------------------------
-  // COMPLETE — Extract cookies and close the headed browser
+  // COMPLETE — Extract cookies from persistent context and close browser
   // -----------------------------------------------------------------------
   if (action === "complete") {
     const { sessionId } = body;
-    if (!sessionId) {
-      return NextResponse.json({ error: "Missing sessionId" }, { status: 400 });
-    }
-
-    const session = sessions.get(sessionId);
-    if (!session) {
-      return NextResponse.json({ error: "Session not found or expired" }, { status: 404 });
+    if (!sessionId || !SESSION_ID_PATTERN.test(sessionId)) {
+      return NextResponse.json({ error: "Missing or invalid sessionId" }, { status: 400 });
     }
 
     try {
-      const cookies: Cookie[] = await session.context.cookies();
-      await session.browser.close();
-      sessions.delete(sessionId);
-
+      const cookies = await extractCookiesAndClose(sessionId);
       return NextResponse.json({ cookies, cookieCount: cookies.length });
     } catch (err) {
-      // Ensure cleanup even on error
-      session.browser.close().catch(() => {});
-      sessions.delete(sessionId);
+      logError("[auth-session/complete]", err);
       return NextResponse.json(
-        { error: `Complete failed: ${(err as Error).message}` },
-        { status: 500 }
+        { error: sanitizeError(err, "Session not found.") },
+        { status: 404 }
       );
     }
+  }
+
+  // -----------------------------------------------------------------------
+  // PROCEED — Signal that user has finished logging in (interactive mode)
+  // -----------------------------------------------------------------------
+  if (action === "proceed") {
+    const { sessionId } = body;
+    if (!sessionId || !SESSION_ID_PATTERN.test(sessionId)) {
+      return NextResponse.json({ error: "Missing or invalid sessionId" }, { status: 400 });
+    }
+
+    setReadySignal(sessionId);
+    return NextResponse.json({ ok: true });
+  }
+
+  // -----------------------------------------------------------------------
+  // CLEAR-PROFILE — Delete the persisted browser profile from disk
+  // -----------------------------------------------------------------------
+  if (action === "clear-profile") {
+    const cleared = clearBrowserProfile();
+    return NextResponse.json({ cleared });
   }
 
   return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });

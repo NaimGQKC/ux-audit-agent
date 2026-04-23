@@ -3,8 +3,12 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { validateAnalysisResult, type UXIssue } from "@/lib/analyzer";
+import { analyzeScreenshotsDir } from "@/lib/analyzer/run";
 import { type ViewportName, VIEWPORTS } from "@/lib/crawler";
-import { runClaudePrint } from "@/lib/claude";
+import { saveAuditToCache } from "@/lib/cache";
+import { requireApiAuth, sanitizeError, logError } from "@/lib/security";
+
+const ALLOWED_IMAGE_EXT = new Set(["png", "jpg", "jpeg", "webp"]);
 
 // ---------------------------------------------------------------------------
 // Types (same output format as /api/audit)
@@ -71,6 +75,9 @@ export const maxDuration = 300;
 const VIEWPORT_NAMES: ViewportName[] = Object.keys(VIEWPORTS) as ViewportName[];
 
 export async function POST(request: NextRequest) {
+  const denied = requireApiAuth(request);
+  if (denied) return denied;
+
   let formData: FormData;
   try {
     formData = await request.formData();
@@ -95,6 +102,20 @@ export async function POST(request: NextRequest) {
   for (let i = 0; i < allEntries.length; i++) {
     const entry = allEntries[i];
     if (entry instanceof File && entry.size > 0) {
+      const ext = entry.name.split(".").pop()?.toLowerCase();
+      if (!ext || !ALLOWED_IMAGE_EXT.has(ext)) {
+        return new Response(
+          JSON.stringify({ error: `Unsupported image type: .${ext ?? "(none)"}` }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      // Cap individual images to 15 MB — protects memory + matches frontend limit.
+      if (entry.size > 15 * 1024 * 1024) {
+        return new Response(
+          JSON.stringify({ error: `Image too large: ${(entry.size / 1024 / 1024).toFixed(1)} MB (max 15 MB).` }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
       images.push(entry);
       labels.push((allLabels[i] as string) || `Page ${i + 1}`);
     }
@@ -107,15 +128,36 @@ export async function POST(request: NextRequest) {
     });
   }
 
+  // Cap total upload size to 50 MB to prevent memory exhaustion
+  const totalBytes = images.reduce((acc, img) => acc + img.size, 0);
+  if (totalBytes > 50 * 1024 * 1024) {
+    return new Response(
+      JSON.stringify({ error: `Total upload size (${(totalBytes / 1024 / 1024).toFixed(1)} MB) exceeds 50 MB limit.` }),
+      { status: 400, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const sse = createSSEWriter(controller);
+      const encoder = new TextEncoder();
+
+      // SSE heartbeat to prevent proxy/CDN idle disconnect
+      const heartbeat = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(": heartbeat\n\n"));
+        } catch {
+          clearInterval(heartbeat);
+        }
+      }, 15_000);
 
       try {
         await runScreenshotAudit(images, labels, sse, prdContext || undefined, repoContext || undefined);
       } catch (err) {
-        sse.sendError((err as Error).message);
+        logError("[audit-screenshots]", err);
+        sse.sendError(sanitizeError(err, "Screenshot audit failed."));
       } finally {
+        clearInterval(heartbeat);
         sse.close();
       }
     },
@@ -126,6 +168,7 @@ export async function POST(request: NextRequest) {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
     },
   });
 }
@@ -143,7 +186,8 @@ async function runScreenshotAudit(
 ): Promise<void> {
   sse.sendProgress(`Processing ${images.length} uploaded screenshot(s)...`);
 
-  const outputDir = path.join(os.tmpdir(), `ux-audit-upload-${Date.now()}`);
+  const sessionId = `ux-audit-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const outputDir = path.join(os.tmpdir(), sessionId);
   fs.mkdirSync(outputDir, { recursive: true });
 
   // Save images to temp directory
@@ -168,58 +212,20 @@ async function runScreenshotAudit(
 
   sse.sendProgress(`Saved ${savedFiles.length} screenshot(s). Analyzing with Claude...`);
 
-  // Build analysis prompt
-  const promptFile = path.join(process.cwd(), "src", "lib", "analyzer", "ux-analysis-prompt.txt");
-  if (!fs.existsSync(promptFile)) {
-    throw new Error(`Prompt file not found at ${promptFile}`);
+  // Use the shared batched analyzer — same implementation the /api/audit route uses,
+  // including JSON truncation repair and bounded-concurrency batching.
+  const analyzeResult = await analyzeScreenshotsDir(outputDir, {
+    prdContext,
+    repoContext,
+    onProgress: (msg, current, total) => sse.sendProgress(msg, current, total),
+  });
+
+  for (const e of analyzeResult.errors) {
+    sse.sendProgress(`Warning: batch ${e.batchIndex + 1} failed: ${e.reason}`);
   }
 
-  let prompt = "";
-  if (prdContext) {
-    prompt += `PROJECT CONTEXT:\n${prdContext}\n\nUse the project context above to evaluate the UI against actual product requirements and goals. Flag issues where the implementation diverges from stated requirements. Reference PRD requirements in acceptance_criteria where applicable.\n\n---\n\n`;
-  }
-
-  if (repoContext) {
-    prompt += `REPOSITORY CONTEXT:\nThe following files were extracted from the project's GitHub repository. Use them to understand the design system, tech stack, component patterns, and project conventions. Reference specific design tokens, component names, or config values in your recommendations where relevant.\n\n${repoContext}\n\n---\n\n`;
-  }
-
-  prompt += fs.readFileSync(promptFile, "utf-8");
-
-  prompt += `\n\n---\n\nAnalyze each of the following screenshot image files for UX and accessibility issues. Read each file listed below, then evaluate it against all the criteria described above.\n\nScreenshot files:\n`;
-  for (const sf of savedFiles) {
-    prompt += `- ${sf.filepath}\n`;
-  }
-
-  prompt += `\nReturn a single JSON object with results grouped by filename (basename only, not the full path). Each key should be the PNG filename, and each value should be an object with an "issues" array following the schema described above.\n\nExpected structure:\n{\n  "screenshots": {\n    "${savedFiles[0]?.filename || "page_desktop.png"}": { "issues": [ ... ] }\n  }\n}\n\nOutput ONLY valid JSON. No markdown code fences, no explanatory text, no commentary — just the raw JSON object.\n`;
-
-  try {
-    const result = await runClaudePrint(prompt);
-    fs.writeFileSync(path.join(outputDir, "analysis-results.json"), result);
-  } catch (err) {
-    throw new Error(`Screenshot analysis failed: ${(err as Error).message}`);
-  }
-
-  // Parse results
   sse.sendProgress("Reading analysis results...");
-
-  const resultsPath = path.join(outputDir, "analysis-results.json");
-  const rawResults = fs.readFileSync(resultsPath, "utf-8");
-
-  const jsonText = rawResults
-    .trim()
-    .replace(/^```(?:json)?\s*\n?/, "")
-    .replace(/\n?\s*```\s*$/, "");
-
-  let analysisData: { screenshots: Record<string, unknown> };
-  try {
-    analysisData = JSON.parse(jsonText);
-  } catch {
-    throw new Error("Failed to parse analysis results as JSON");
-  }
-
-  if (!analysisData.screenshots || typeof analysisData.screenshots !== "object") {
-    throw new Error("Invalid analysis results: missing 'screenshots' object");
-  }
+  const analysisData = { screenshots: analyzeResult.screenshots };
 
   // Map results — each uploaded image becomes a "page" with desktop viewport
   const pages: PageResult[] = savedFiles.map((sf) => {
@@ -243,7 +249,8 @@ async function runScreenshotAudit(
           }
         }
 
-        viewports[vpName] = { screenshotPath: sf.filepath, issues };
+        const url = `/api/screenshot?s=${encodeURIComponent(sessionId)}&f=${encodeURIComponent(sf.filename)}`;
+        viewports[vpName] = { screenshotPath: url, issues };
       } else {
         viewports[vpName] = { screenshotPath: "", issues: [] };
       }
@@ -262,6 +269,13 @@ async function runScreenshotAudit(
     timestamp: new Date().toISOString(),
     pages,
   };
+
+  // Persist to cache
+  try {
+    saveAuditToCache(result, outputDir);
+  } catch (err) {
+    sse.sendProgress(`Warning: failed to cache results: ${(err as Error).message}`);
+  }
 
   sse.sendProgress("Audit complete.", savedFiles.length, savedFiles.length);
   sse.sendResult(result);

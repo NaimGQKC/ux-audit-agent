@@ -1,0 +1,25 @@
+{
+  "name": "Material 3",
+  "license": "Apache-2.0",
+  "source": "https://m3.material.io/styles (baseline type scale, shape scale, and color roles; values hand-picked and normalized to px/hex)",
+  "baseUnit": 4,
+  "tokens": {
+    "fontSizes": [11, 12, 14, 16, 18, 22, 24, 28, 32, 36, 45, 57],
+    "spacing": [0, 4, 8, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64, 80, 96],
+    "radius": [0, 4, 8, 12, 16, 20, 24, 28, 9999],
+    "colors": [
+      "#000000",
+      "#ffffff",
+      "#6750a4",
+      "#625b71",
+      "#7d5260",
+      "#b3261e",
+      "#1c1b1f",
+      "#e6e1e5",
+      "#49454f",
+      "#79747e",
+      "#fef7ff",
+      "#f3edf7"
+    ]
+  }
+}

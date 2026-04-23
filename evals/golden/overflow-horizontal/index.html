@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Horizontal overflow at mobile</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      html, body { margin: 0; padding: 0; background: #fff; color: #111; font-family: system-ui, sans-serif; }
+      main { padding: 16px; }
+      h1 { font-size: 22px; }
+      /*
+        A 500px fixed-width table inside a 375px mobile viewport will
+        horizontally overflow — content is cut off without a visible
+        scroll affordance and the page itself scrolls sideways.
+      */
+      table.report {
+        width: 500px;
+        min-width: 500px;
+        border-collapse: collapse;
+        margin-top: 12px;
+      }
+      table.report th,
+      table.report td {
+        border: 1px solid #ddd;
+        padding: 10px 14px;
+        white-space: nowrap;
+        font-size: 14px;
+      }
+      table.report th { background: #f5f5f5; text-align: left; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Quarterly Report</h1>
+      <table class="report">
+        <thead>
+          <tr>
+            <th>Region</th>
+            <th>Q1 Revenue</th>
+            <th>Q2 Revenue</th>
+            <th>Q3 Revenue</th>
+            <th>Q4 Revenue</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>North America</td><td>$120,000</td><td>$145,000</td><td>$160,000</td><td>$175,000</td></tr>
+          <tr><td>Europe</td>        <td>$90,000</td> <td>$95,000</td> <td>$105,000</td><td>$112,000</td></tr>
+          <tr><td>Asia Pacific</td>  <td>$80,000</td> <td>$88,000</td> <td>$99,000</td> <td>$104,000</td></tr>
+          <tr><td>Latin America</td> <td>$45,000</td> <td>$50,000</td> <td>$55,000</td> <td>$61,000</td></tr>
+        </tbody>
+      </table>
+    </main>
+  </body>
+</html>

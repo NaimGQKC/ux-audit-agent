@@ -1,0 +1,23 @@
+{
+  "url_or_file": "./index.html",
+  "description": "500px fixed-width table inside a 375px mobile viewport — horizontal overflow with no responsive stacking.",
+  "must_match": [
+    {
+      "category": "responsive",
+      "keyword_any": [
+        "overflow",
+        "horizontal scroll",
+        "horizontal overflow",
+        "cut off",
+        "reflow",
+        "WCAG 1.4.10",
+        "1.4.10",
+        "mobile",
+        "responsive",
+        "stacking",
+        "viewport"
+      ],
+      "min_severity": "major"
+    }
+  ]
+}

@@ -4,12 +4,17 @@ import {
   type UXIssue as AsanaUXIssue,
   type AsanaBatchResult,
 } from "@/lib/asana";
+import { requireApiAuth, sanitizeError, logError } from "@/lib/security";
 
 // ---------------------------------------------------------------------------
 // Request types
 // ---------------------------------------------------------------------------
 
 interface IssuePayload {
+  /** Client-side id, echoed back in the response so the UI can map the
+   * created Asana permalink onto the specific issue (enables pin ↔ ticket
+   * linking). */
+  id?: string;
   title: string;
   description: string;
   severity: "critical" | "major" | "minor";
@@ -45,7 +50,13 @@ function validateIssues(issues: unknown): issues is IssuePayload[] {
       typeof item.description === "string" &&
       VALID_SEVERITIES.has(item.severity) &&
       typeof item.category === "string" &&
-      typeof item.recommendation === "string"
+      typeof item.recommendation === "string" &&
+      typeof item.affected_element === "string" &&
+      typeof item.steps_to_reproduce === "string" &&
+      typeof item.suggested_fix === "string" &&
+      typeof item.acceptance_criteria === "string" &&
+      Array.isArray(item.affected_viewports) &&
+      item.affected_viewports.length > 0
   );
 }
 
@@ -54,6 +65,9 @@ function validateIssues(issues: unknown): issues is IssuePayload[] {
 // ---------------------------------------------------------------------------
 
 export async function POST(request: NextRequest) {
+  const denied = requireApiAuth(request);
+  if (denied) return denied;
+
   let body: AsanaRequestBody;
   try {
     body = (await request.json()) as AsanaRequestBody;
@@ -78,8 +92,11 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Map incoming payloads to the Asana module's UXIssue shape
+  // Map incoming payloads to the Asana module's UXIssue shape.
+  // Preserve issue.id on the Asana UXIssue so the batch result can be
+  // correlated back to the originating UI issue row by row.
   const asanaIssues: AsanaUXIssue[] = body.issues.map((issue) => ({
+    ...(issue.id ? { id: issue.id } : {}),
     title: issue.title,
     description: issue.description,
     severity: issue.severity,
@@ -98,19 +115,27 @@ export async function POST(request: NextRequest) {
   try {
     result = await createMultipleTickets(asanaIssues);
   } catch (err) {
+    logError("[asana]", err);
     return NextResponse.json(
-      { error: `Failed to create Asana tickets: ${(err as Error).message}` },
+      { error: sanitizeError(err, "Failed to create Asana tickets.") },
       { status: 502 }
     );
   }
 
+  // Asana module echoes the original issue.id back on each task so we can
+  // map results to payloads even when intermediate issues fail. No
+  // title-based lookup: two issues with identical titles used to collide.
+  const createdById = result.created.map((task) => ({
+    issueId: task.id ?? null,
+    taskId: task.gid,
+    name: task.name,
+    url: task.url,
+  }));
+
   return NextResponse.json({
-    created: result.created.map((task) => ({
-      taskId: task.gid,
-      name: task.name,
-      url: task.url,
-    })),
+    created: createdById,
     failed: result.failed.map((f) => ({
+      issueId: f.issue.id ?? null,
       issue: f.issue.title,
       error: f.error,
     })),

@@ -6,7 +6,7 @@
  * additional API cost (uses the user's Claude Code subscription).
  */
 
-import { execFile } from "node:child_process";
+import { runClaudePrint } from "@/lib/claude";
 import type {
   StitchProject,
   StitchDesignSystem,
@@ -21,34 +21,8 @@ import type {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const TIMEOUT_MS = 120_000; // 2 minutes per Stitch call
-
-/**
- * Run `claude -p` with the given prompt and return the raw stdout.
- */
 function runClaude(prompt: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = execFile(
-      "claude",
-      ["-p"],
-      {
-        timeout: TIMEOUT_MS,
-        maxBuffer: 10 * 1024 * 1024, // 10 MB
-        shell: true, // Required on Windows to resolve `claude` from PATH
-      },
-      (error, stdout, stderr) => {
-        if (error) {
-          console.error("[stitch] claude CLI error:", error.message);
-          if (stderr) console.error("[stitch] stderr:", stderr);
-          reject(new Error(`Stitch claude CLI failed: ${error.message}`));
-          return;
-        }
-        resolve(stdout.trim());
-      }
-    );
-    child.stdin?.write(prompt);
-    child.stdin?.end();
-  });
+  return runClaudePrint(prompt, { label: "stitch" });
 }
 
 /**
@@ -61,7 +35,18 @@ function parseJSON<T>(raw: string): T {
   if (fenceMatch) {
     cleaned = fenceMatch[1].trim();
   }
-  return JSON.parse(cleaned) as T;
+  // Also strip any leading non-JSON text (e.g. "Here is the result:")
+  const jsonStart = cleaned.search(/[{\[]/);
+  if (jsonStart > 0) {
+    cleaned = cleaned.slice(jsonStart);
+  }
+  try {
+    return JSON.parse(cleaned) as T;
+  } catch (err) {
+    throw new Error(
+      `[stitch] Failed to parse JSON: ${(err as Error).message}\nRaw response (first 500 chars): ${raw.slice(0, 500)}`
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -78,9 +63,7 @@ export async function initProject(auditUrl: string): Promise<StitchProject> {
 
   const prompt = `Use the Stitch MCP tool create_project to create a new project titled "${projectName}". Return only the JSON response with fields: id, name, createdAt.`;
 
-  console.log("[stitch] initProject prompt:", prompt);
   const raw = await runClaude(prompt);
-  console.log("[stitch] initProject response:", raw);
 
   return parseJSON<StitchProject>(raw);
 }
@@ -100,9 +83,7 @@ Spacing: ${JSON.stringify(tokens.spacing)}
 
 Return only the JSON response with fields: id, name, tokens.`;
 
-  console.log("[stitch] setupDesignSystem prompt:", prompt);
   const raw = await runClaude(prompt);
-  console.log("[stitch] setupDesignSystem response:", raw);
 
   return parseJSON<StitchDesignSystem>(raw);
 }
@@ -126,9 +107,7 @@ ${req.designSystemId ? `Design system ID: ${req.designSystemId}` : ""}
 Use the Stitch MCP tool generate_screen_from_text with projectId "${req.projectId}" and modelId "GEMINI_3_1_PRO".
 Return the screen details as JSON with fields: screenId, imageUrl, prompt.`;
 
-  console.log("[stitch] generateFix prompt:", prompt);
   const raw = await runClaude(prompt);
-  console.log("[stitch] generateFix response:", raw);
 
   return parseJSON<GenerateFixResult>(raw);
 }
@@ -145,9 +124,7 @@ export async function editScreen(
 
 Return the updated screen details as JSON with fields: screenId, imageUrl, prompt.`;
 
-  console.log("[stitch] editScreen prompt:", prompt);
   const raw = await runClaude(prompt);
-  console.log("[stitch] editScreen response:", raw);
 
   return parseJSON<GenerateFixResult>(raw);
 }
@@ -164,9 +141,7 @@ export async function generateVariants(
 
 Return an array of screen details, each with fields: screenId, imageUrl, prompt.`;
 
-  console.log("[stitch] generateVariants prompt:", prompt);
   const raw = await runClaude(prompt);
-  console.log("[stitch] generateVariants response:", raw);
 
   return parseJSON<GenerateFixResult[]>(raw);
 }
@@ -177,9 +152,7 @@ Return an array of screen details, each with fields: screenId, imageUrl, prompt.
 export async function getScreenImage(screenName: string): Promise<string> {
   const prompt = `Use the Stitch MCP tool get_screen to retrieve the screen named "${screenName}". Return only the image URL as a plain string (no JSON wrapping).`;
 
-  console.log("[stitch] getScreenImage prompt:", prompt);
   const raw = await runClaude(prompt);
-  console.log("[stitch] getScreenImage response:", raw);
 
   // The response should be a plain URL, but strip quotes if wrapped
   return raw.replace(/^["']|["']$/g, "");

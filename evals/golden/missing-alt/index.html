@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Missing alt text</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      html, body { margin: 0; padding: 0; background: #fff; color: #111; font-family: system-ui, sans-serif; }
+      main { padding: 48px; max-width: 720px; }
+      h1 { font-size: 28px; }
+      .hero {
+        display: block;
+        width: 480px;
+        height: 240px;
+        background:
+          linear-gradient(135deg, #ff7a18 0%, #af002d 100%);
+        border-radius: 8px;
+        margin-bottom: 24px;
+      }
+      .inline-icon {
+        display: inline-block;
+        width: 32px;
+        height: 32px;
+        background: #0070f3;
+        vertical-align: middle;
+        margin-right: 8px;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Our Latest Product Launch</h1>
+      <!-- Image with NO alt attribute at all -->
+      <img
+        class="hero"
+        src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='480' height='240'><defs><linearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'><stop offset='0%25' stop-color='%23ff7a18'/><stop offset='100%25' stop-color='%23af002d'/></linearGradient></defs><rect width='480' height='240' fill='url(%23g)'/><text x='50%25' y='50%25' text-anchor='middle' fill='white' font-size='28' font-family='sans-serif'>HERO IMAGE</text></svg>"
+      />
+      <p>
+        <!-- Another image with no alt — used as an informative icon -->
+        <img
+          class="inline-icon"
+          src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><rect width='32' height='32' fill='%230070f3'/></svg>"
+        />
+        Click the blue icon to continue.
+      </p>
+      <p>
+        The hero image above conveys information about our product launch but
+        has no accessible text alternative. Screen reader users hear nothing
+        meaningful.
+      </p>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Contrast fail — light gray on white</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      html, body { margin: 0; padding: 0; background: #ffffff; color: #cccccc; font-family: system-ui, sans-serif; }
+      main { padding: 48px; }
+      h1 { color: #d0d0d0; font-size: 28px; }
+      p  { color: #cccccc; font-size: 18px; line-height: 1.6; max-width: 640px; }
+      a  { color: #d6d6d6; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Welcome to our service</h1>
+      <p>
+        This paragraph is rendered in light gray (#cccccc) on a pure white
+        background. The contrast ratio is well below 4.5:1 and fails WCAG 1.4.3
+        "Contrast (Minimum)". Readers with low vision or on bright displays
+        will not be able to read this text.
+      </p>
+      <p>
+        We also have a <a href="#">link like this one</a> which is equally
+        washed out. Please fix the text color before shipping.
+      </p>
+    </main>
+  </body>
+</html>

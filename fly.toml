@@ -1,0 +1,64 @@
+# Fly.io deployment config for the remote MCP server.
+#
+# One-time setup:
+#   flyctl launch --no-deploy        # creates the app
+#   flyctl secrets set ANTHROPIC_API_KEY=sk-ant-...
+#   flyctl secrets set MCP_BEARER_TOKEN=$(openssl rand -hex 32)
+#
+# Deploy:
+#   flyctl deploy
+#
+# The app name below is a placeholder — `flyctl launch` will rewrite it with
+# whatever you choose.
+
+app = "ux-audit-agent"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  HOST = "0.0.0.0"
+  PORT = "8080"
+
+# Secrets (set via `flyctl secrets set ...`, not committed):
+#   ANTHROPIC_API_KEY — the Claude API key for remote analysis
+#   MCP_BEARER_TOKEN  — the bearer token claude.ai presents in Authorization header
+#   CLAUDE_MODEL      — optional override; defaults to claude-opus-4-7
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+  processes = ["app"]
+
+  [services.concurrency]
+    # Playwright runs are heavy (Chromium + screenshots). Keep per-instance
+    # concurrency low; scale horizontally when needed.
+    hard_limit = 4
+    soft_limit = 2
+    type = "connections"
+
+  [[services.ports]]
+    handlers = ["http"]
+    port = 80
+    force_https = true
+
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443
+
+  [[services.http_checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "30s"
+    method = "get"
+    path = "/health"
+    protocol = "http"
+
+[[vm]]
+  # Playwright + Chromium needs real RAM. 2GB is the floor for stable runs
+  # on 10-page audits; bump to 4GB if you see OOM kills during large crawls.
+  cpu_kind = "shared"
+  cpus = 2
+  memory = "2gb"

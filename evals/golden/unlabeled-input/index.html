@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Unlabeled input</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      html, body { margin: 0; padding: 0; background: #fff; color: #111; font-family: system-ui, sans-serif; }
+      main { padding: 48px; max-width: 520px; }
+      h1 { font-size: 28px; margin-bottom: 24px; }
+      form { display: flex; flex-direction: column; gap: 16px; }
+      input, button {
+        font: inherit;
+        padding: 12px 14px;
+        border: 1px solid #bbb;
+        border-radius: 6px;
+      }
+      button {
+        background: #0070f3;
+        color: white;
+        border-color: #0070f3;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Sign up for updates</h1>
+      <form>
+        <!--
+          CRITICAL: no <label>, no aria-label, no aria-labelledby.
+          Placeholder text is not a label and disappears on typing.
+        -->
+        <input type="email" placeholder="you@example.com" />
+        <input type="text" placeholder="Your name" />
+        <button type="submit">Subscribe</button>
+      </form>
+    </main>
+  </body>
+</html>

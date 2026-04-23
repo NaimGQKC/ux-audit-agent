@@ -1,8 +1,12 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { initProject, generateFix, getScreenImage } from "@/lib/stitch";
 import type { GenerateFixRequest } from "@/lib/stitch/types";
+import { requireApiAuth, sanitizeError, logError } from "@/lib/security";
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
+  const denied = requireApiAuth(request);
+  if (denied) return denied;
+
   try {
     const body = await request.json();
     const {
@@ -59,7 +63,10 @@ export async function POST(request: Request) {
       projectId,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown error";
-    return NextResponse.json({ error: message }, { status: 500 });
+    logError("[stitch/generate-fix]", error);
+    return NextResponse.json(
+      { error: sanitizeError(error, "Failed to generate fix mockup.") },
+      { status: 500 },
+    );
   }
 }

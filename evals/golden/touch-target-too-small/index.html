@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Touch targets too small</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      html, body { margin: 0; padding: 0; background: #fff; color: #111; font-family: system-ui, sans-serif; }
+      main { padding: 24px; }
+      h1 { font-size: 22px; margin-bottom: 20px; }
+      .toolbar {
+        display: flex;
+        gap: 2px; /* siblings touching — makes mis-taps easy */
+      }
+      .tiny-btn {
+        width: 20px;
+        height: 20px;
+        font-size: 10px;
+        line-height: 20px;
+        padding: 0;
+        border: 1px solid #888;
+        background: #f3f3f3;
+        cursor: pointer;
+        text-align: center;
+      }
+      p { margin-top: 24px; max-width: 520px; font-size: 14px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Edit toolbar</h1>
+      <div class="toolbar">
+        <button class="tiny-btn" aria-label="bold">B</button>
+        <button class="tiny-btn" aria-label="italic">I</button>
+        <button class="tiny-btn" aria-label="underline">U</button>
+        <button class="tiny-btn" aria-label="strike">S</button>
+        <button class="tiny-btn" aria-label="link">L</button>
+        <button class="tiny-btn" aria-label="image">IMG</button>
+        <button class="tiny-btn" aria-label="quote">"</button>
+        <button class="tiny-btn" aria-label="code">&lt;&gt;</button>
+      </div>
+      <p>
+        These toolbar buttons are 20x20 CSS pixels with 2px gaps. They are well
+        under the WCAG 2.5.8 target size minimum (24x24) and the recommended
+        44x44 touch target. Fitts's Law says small distant targets are slow and
+        error-prone; adjacent tiny targets guarantee mis-taps on mobile.
+      </p>
+    </main>
+  </body>
+</html>

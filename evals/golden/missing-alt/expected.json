@@ -1,0 +1,11 @@
+{
+  "url_or_file": "./index.html",
+  "description": "Informative <img> elements with no alt attribute. Expect a WCAG 1.1.1 finding.",
+  "must_match": [
+    {
+      "category": "accessibility",
+      "keyword_any": ["alt", "alternative text", "WCAG 1.1.1", "1.1.1", "non-text content", "screen reader"],
+      "min_severity": "major"
+    }
+  ]
+}
