@@ -176,14 +176,19 @@ async function main(): Promise<void> {
   if ("needsAuth" in outcome && outcome.needsAuth) {
     process.stderr.write(
       `\nERROR: Site requires authentication (${outcome.authUrl}).\n` +
-        `  The CLI does not support interactive login — run the audit dashboard instead.\n`,
+        `  The CLI does not support interactive login directly. Either:\n` +
+        `    - Run the web dashboard (npm run dev) for a guided login + audit flow, or\n` +
+        `    - Use Claude Code + the local MCP server and call auth_session({ url }) once\n` +
+        `      to persist a session — the CLI will then reuse ~/.ux-audit-agent/browser-profile/.\n`,
     );
     process.exit(3);
   }
   if ("needsSSOLogin" in outcome && outcome.needsSSOLogin) {
     process.stderr.write(
       `\nERROR: Site redirected to SSO (${outcome.redirectUrl}).\n` +
-        `  The CLI does not support SSO flows — run the audit dashboard instead.\n`,
+        `  Run the web dashboard or MCP auth_session({ url }) to complete the SSO handshake once,\n` +
+        `  which saves the session to ~/.ux-audit-agent/browser-profile/. Future CLI runs pick it\n` +
+        `  up automatically.\n`,
     );
     process.exit(3);
   }

@@ -169,14 +169,36 @@ function cleanupStaleSessions() {
   }
 }
 
+export interface HeadedBrowserOptions {
+  /**
+   * Delete the persisted profile before launching. Default: true.
+   *
+   * Why this defaults to true: re-using a profile across runs is the #1 cause
+   * of "second run doesn't work" bugs — stale SSO cookies land us on a
+   * partially-authenticated state the user can't see, and extracted cookies
+   * end up missing the refreshed session token. Starting fresh each run is
+   * the deterministic choice.
+   *
+   * Set to false only when the caller explicitly wants to reuse an existing
+   * logged-in session (e.g. a "continue from last session" UX flag).
+   */
+  freshProfile?: boolean;
+}
+
 /**
  * Launch a headed persistent browser at the given URL.
  * Returns a sessionId the frontend can use to signal "I'm done logging in".
  */
 export async function launchHeadedPersistentBrowser(
-  url: string
+  url: string,
+  options: HeadedBrowserOptions = {}
 ): Promise<{ sessionId: string }> {
   cleanupStaleSessions();
+
+  const freshProfile = options.freshProfile ?? true;
+  if (freshProfile) {
+    clearBrowserProfile();
+  }
 
   fs.mkdirSync(BROWSER_PROFILE_DIR, { recursive: true });
   clearProfileLocks();
@@ -332,20 +354,91 @@ export async function checkSSOReturn(
   }
 }
 
+export interface ExtractCookiesOptions {
+  /**
+   * Wipe the persistent profile dir after extracting cookies. Default: true.
+   *
+   * Pairs with `launchHeadedPersistentBrowser({ freshProfile: true })` to keep
+   * the on-disk profile deterministic. The caller already has the cookies it
+   * needs for this run; keeping the profile only creates drift for the next
+   * run's SSO handshake.
+   *
+   * Set to false if you want the profile to persist (e.g. a long-lived
+   * "stay signed in" UX).
+   */
+  wipeProfileAfter?: boolean;
+  /**
+   * When true (default), returned cookies are filtered to the requested
+   * origin's registrable domain and any of its subdomains. This stops an
+   * audit of example.com from sending back, say, `*.google.com` SSO cookies
+   * that happen to live in the real-Chrome profile. Callers that genuinely
+   * need every cookie (some exotic SSO flows cross domains) can opt out with
+   * `restrictToRequestedOrigin: false`.
+   */
+  restrictToRequestedOrigin?: boolean;
+}
+
+/**
+ * Return the registrable suffix for a hostname, accepting any subdomain of it.
+ * This is a deliberately simple heuristic: it uses the last two labels for
+ * most TLDs and the last three for known two-label public suffixes (co.uk,
+ * com.au, etc). Good enough to stop unrelated cookies leaking across orgs;
+ * exact PSL lookup would add a dependency for marginal accuracy gain.
+ */
+function registrableDomain(hostname: string): string {
+  const h = hostname.replace(/^\./, "").toLowerCase();
+  const parts = h.split(".").filter(Boolean);
+  if (parts.length < 2) return h;
+  const twoLabelTlds = new Set([
+    "co.uk", "org.uk", "ac.uk", "gov.uk",
+    "com.au", "net.au", "org.au",
+    "co.jp", "com.br", "com.mx",
+  ]);
+  const last2 = parts.slice(-2).join(".");
+  if (parts.length >= 3 && twoLabelTlds.has(last2)) {
+    return parts.slice(-3).join(".");
+  }
+  return last2;
+}
+
+function cookieBelongsToOrigin(cookie: Cookie, origin: string): boolean {
+  try {
+    const target = registrableDomain(new URL(origin).hostname);
+    const domain = cookie.domain?.replace(/^\./, "").toLowerCase() ?? "";
+    if (!domain) return false;
+    return domain === target || domain.endsWith("." + target);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Extract all cookies from the persistent context and close the browser.
- * The profile on disk retains everything for next time.
+ * By default wipes the profile dir afterwards so the next run starts clean —
+ * this is the fix for the "second run doesn't work without clearing cache" bug.
  */
 export async function extractCookiesAndClose(
-  sessionId: string
+  sessionId: string,
+  options: ExtractCookiesOptions = {}
 ): Promise<Cookie[]> {
   const session = activeSessions.get(sessionId);
   if (!session) throw new Error("Session not found");
 
-  const cookies = await session.context.cookies();
+  const allCookies = await session.context.cookies();
+  const restrict = options.restrictToRequestedOrigin ?? true;
+  const cookies = restrict
+    ? allCookies.filter((c) => cookieBelongsToOrigin(c, session.requestedOrigin))
+    : allCookies;
+
   await session.context.close().catch(() => {});
   await session.browser?.close().catch(() => {});
   activeSessions.delete(sessionId);
+
+  if (options.wipeProfileAfter ?? true) {
+    // Best-effort — losing the wipe is never a hard failure (the next run
+    // will just re-wipe on launch via the freshProfile default).
+    try { clearBrowserProfile(); } catch { /* ignore */ }
+  }
 
   return cookies;
 }

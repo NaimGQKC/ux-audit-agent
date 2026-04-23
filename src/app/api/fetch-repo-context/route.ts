@@ -4,6 +4,13 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { promisify } from "node:util";
+import {
+  requireApiAuth,
+  rateLimitCheck,
+  clientIp,
+  hashIdentifier,
+  logError,
+} from "@/lib/security";
 
 const execFileAsync = promisify(execFile);
 
@@ -55,6 +62,24 @@ function isValidGitHubUrl(input: string): boolean {
 }
 
 export async function POST(request: NextRequest) {
+  const denied = requireApiAuth(request);
+  if (denied) return denied;
+
+  // Git clone is expensive (disk + network). Rate-limit per client to stop
+  // a single attacker from chewing through disk or saturating git servers.
+  const ip = clientIp(request.headers as unknown as Record<string, string | undefined>);
+  const limit = rateLimitCheck(hashIdentifier(ip), {
+    limit: 10,
+    windowMs: 10 * 60 * 1000,
+    namespace: "fetch-repo-context",
+  });
+  if (!limit.allowed) {
+    return Response.json(
+      { error: "Rate limit exceeded. Please retry shortly." },
+      { status: 429, headers: { "Retry-After": String(Math.ceil(limit.retryAfterMs / 1000)) } },
+    );
+  }
+
   let body: { repoUrl: string };
   try {
     body = await request.json();
@@ -155,15 +180,16 @@ export async function POST(request: NextRequest) {
     const result: RepoContextResponse = { repoUrl, files, summary };
     return Response.json(result);
   } catch (err) {
+    logError("[fetch-repo-context]", err);
     // Sanitize error message — don't leak filesystem paths or command details
-    const rawMsg = (err as Error).message;
+    const rawMsg = (err as Error).message || "";
     let safeMsg = "Failed to fetch repository.";
-    if (rawMsg.includes("fatal:")) {
-      // Extract just the git error message
-      const gitErr = rawMsg.split("fatal:").pop()?.trim().split("\n")[0] || "";
-      safeMsg = `Git error: ${gitErr}`;
-    } else if (rawMsg.includes("timed out") || rawMsg.includes("ETIMEDOUT")) {
+    if (rawMsg.includes("timed out") || rawMsg.includes("ETIMEDOUT")) {
       safeMsg = "Repository fetch timed out. Is the URL correct and the repo public?";
+    } else if (rawMsg.includes("Repository not found") || rawMsg.includes("not found")) {
+      safeMsg = "Repository not found. Is the URL correct and the repo public?";
+    } else if (rawMsg.includes("Authentication") || rawMsg.includes("denied")) {
+      safeMsg = "Repository access denied. Only public repos are supported.";
     }
     return Response.json({ error: safeMsg }, { status: 500 });
   } finally {

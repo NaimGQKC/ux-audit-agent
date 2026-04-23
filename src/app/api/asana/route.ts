@@ -4,6 +4,7 @@ import {
   type UXIssue as AsanaUXIssue,
   type AsanaBatchResult,
 } from "@/lib/asana";
+import { requireApiAuth, sanitizeError, logError } from "@/lib/security";
 
 // ---------------------------------------------------------------------------
 // Request types
@@ -64,6 +65,9 @@ function validateIssues(issues: unknown): issues is IssuePayload[] {
 // ---------------------------------------------------------------------------
 
 export async function POST(request: NextRequest) {
+  const denied = requireApiAuth(request);
+  if (denied) return denied;
+
   let body: AsanaRequestBody;
   try {
     body = (await request.json()) as AsanaRequestBody;
@@ -111,8 +115,9 @@ export async function POST(request: NextRequest) {
   try {
     result = await createMultipleTickets(asanaIssues);
   } catch (err) {
+    logError("[asana]", err);
     return NextResponse.json(
-      { error: `Failed to create Asana tickets: ${(err as Error).message}` },
+      { error: sanitizeError(err, "Failed to create Asana tickets.") },
       { status: 502 }
     );
   }

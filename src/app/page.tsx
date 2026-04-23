@@ -147,6 +147,24 @@ export default function DashboardPage() {
       setBrandConfig={audit.setBrandConfig}
       brandSaved={audit.brandSaved}
       onSaveBrand={audit.handleSaveBrand}
+      projects={audit.projects}
+      selectedProjectId={audit.selectedProjectId}
+      selectedProject={audit.selectedProject}
+      projectMode={audit.projectMode}
+      newProjectName={audit.newProjectName}
+      setNewProjectName={audit.setNewProjectName}
+      newProjectStandardsDoc={audit.newProjectStandardsDoc}
+      setNewProjectStandardsDoc={audit.setNewProjectStandardsDoc}
+      editStandardsDoc={audit.editStandardsDoc}
+      setEditStandardsDoc={audit.setEditStandardsDoc}
+      projectError={audit.projectError}
+      projectSaving={audit.projectSaving}
+      onProjectSelectChange={audit.handleProjectSelectChange}
+      onCreateProject={audit.handleCreateProject}
+      onCancelNewProject={audit.handleCancelNewProject}
+      onStartEditProject={audit.handleStartEditProject}
+      onSaveEditProject={audit.handleSaveEditProject}
+      onCancelEditProject={audit.handleCancelEditProject}
     />
   );
 

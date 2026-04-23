@@ -43,6 +43,7 @@ next-env.d.ts
 
 # hosted report viewer runs
 /.audit-runs/
+/.audit-projects/
 
 # agent skills (reinstall via npx skills add)
 /.agents
@@ -54,3 +55,6 @@ skills-lock.json
 
 # QA artifacts
 qa-smoke-report.html
+
+# Ad-hoc scan/smoke-test outputs dropped at repo root
+/scan-*.json

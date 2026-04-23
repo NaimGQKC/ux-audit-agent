@@ -1,7 +1,13 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { editScreen } from "@/lib/stitch";
+import { requireApiAuth, sanitizeError, logError } from "@/lib/security";
 
-export async function POST(request: Request) {
+const MAX_PROMPT_LENGTH = 4_000;
+
+export async function POST(request: NextRequest) {
+  const denied = requireApiAuth(request);
+  if (denied) return denied;
+
   try {
     const body = await request.json();
     const { projectId, screenIds, prompt } = body as {
@@ -29,11 +35,21 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "prompt must be a non-empty string" }, { status: 400 });
     }
 
+    if (prompt.length > MAX_PROMPT_LENGTH) {
+      return NextResponse.json(
+        { error: `prompt is too long (max ${MAX_PROMPT_LENGTH} chars).` },
+        { status: 400 },
+      );
+    }
+
     const result = await editScreen({ projectId, screenIds, prompt: prompt.trim() });
 
     return NextResponse.json(result);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown error";
-    return NextResponse.json({ error: message }, { status: 500 });
+    logError("[stitch/edit-screen]", error);
+    return NextResponse.json(
+      { error: sanitizeError(error, "Failed to edit screen.") },
+      { status: 500 },
+    );
   }
 }

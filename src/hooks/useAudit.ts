@@ -91,6 +91,27 @@ export function useAudit() {
   >([]);
   const [cacheLoading, setCacheLoading] = useState(false);
 
+  // Projects — saved per-project design standards auto-attached to audits
+  type ProjectListEntry = { projectId: string; name: string; updatedAt: string };
+  type Project = {
+    projectId: string;
+    name: string;
+    standardsDoc?: string;
+    brandTokens?: string;
+    notes?: string;
+    createdAt: string;
+    updatedAt: string;
+  };
+  const [projects, setProjects] = useState<ProjectListEntry[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState<string>("");
+  const [selectedProject, setSelectedProject] = useState<Project | null>(null);
+  const [projectMode, setProjectMode] = useState<"select" | "new" | "edit">("select");
+  const [newProjectName, setNewProjectName] = useState("");
+  const [newProjectStandardsDoc, setNewProjectStandardsDoc] = useState("");
+  const [editStandardsDoc, setEditStandardsDoc] = useState("");
+  const [projectError, setProjectError] = useState<string | null>(null);
+  const [projectSaving, setProjectSaving] = useState(false);
+
   // -----------------------------------------------------------------------
   // Init
   // -----------------------------------------------------------------------
@@ -134,6 +155,52 @@ export function useAudit() {
       if (authPollRef.current) clearInterval(authPollRef.current);
     };
   }, []);
+
+  // Load saved projects on mount — failures are non-blocking so the form
+  // stays usable even if the projects endpoint errors.
+  useEffect(() => {
+    fetch("/api/projects")
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then((data) => setProjects(Array.isArray(data.projects) ? data.projects : []))
+      .catch((err) => {
+        console.warn("[projects] failed to load list", err);
+      });
+  }, []);
+
+  // When a project is selected, fetch its full record so the UI can surface
+  // standardsDoc. `__new__` is a UI sentinel, not a real id.
+  useEffect(() => {
+    if (!selectedProjectId || selectedProjectId === "__new__") {
+      setSelectedProject(null);
+      return;
+    }
+    let cancelled = false;
+    fetch(`/api/projects/${encodeURIComponent(selectedProjectId)}`)
+      .then(async (res) => {
+        if (res.status === 404) {
+          if (!cancelled) {
+            setSelectedProjectId("");
+            setSelectedProject(null);
+            setProjectError("Selected project no longer exists.");
+          }
+          return null;
+        }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        if (cancelled || !data) return;
+        setSelectedProject(data.project ?? null);
+        setProjectError(null);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setProjectError((err as Error).message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedProjectId]);
 
   // -----------------------------------------------------------------------
   // Computed
@@ -471,6 +538,7 @@ export function useAudit() {
             url,
             prdContext: prdText || undefined,
             repoContext: repoContext || undefined,
+            ...(selectedProjectId && selectedProjectId !== "__new__" && { projectId: selectedProjectId }),
             ...(cookies && { cookies }),
             ...(usePersistedSession && { usePersistedSession: true }),
             ...(interactiveLogin && { interactiveLogin: true }),
@@ -503,7 +571,7 @@ export function useAudit() {
         setPhase("idle");
       }
     },
-    [url, prdText, repoContext, cookieText, parseCookieText, usePersistedSession, interactiveLogin, useRealChrome, realChromeHeadless, captureInteractions, clickSelectorsText, autoLoginEnabled, loginEmail, loginPassword, processSSEStream],
+    [url, prdText, repoContext, selectedProjectId, cookieText, parseCookieText, usePersistedSession, interactiveLogin, useRealChrome, realChromeHeadless, captureInteractions, clickSelectorsText, autoLoginEnabled, loginEmail, loginPassword, processSSEStream],
   );
 
   // -----------------------------------------------------------------------
@@ -901,6 +969,112 @@ export function useAudit() {
   }, [brandConfig, stitchProjectId, url]);
 
   // -----------------------------------------------------------------------
+  // Projects CRUD — create, edit, cancel flows for the picker
+  // -----------------------------------------------------------------------
+
+  const handleCreateProject = useCallback(async () => {
+    const name = newProjectName.trim();
+    if (!name) {
+      setProjectError("Project name is required.");
+      return;
+    }
+    setProjectSaving(true);
+    setProjectError(null);
+    try {
+      const res = await fetch("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          ...(newProjectStandardsDoc ? { standardsDoc: newProjectStandardsDoc } : {}),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error ?? `HTTP ${res.status}`);
+      }
+      const created: Project | undefined = data.project;
+      if (!created) throw new Error("Malformed response");
+
+      // Refresh list so the new project appears in sorted order.
+      try {
+        const listRes = await fetch("/api/projects");
+        if (listRes.ok) {
+          const listData = await listRes.json();
+          setProjects(Array.isArray(listData.projects) ? listData.projects : []);
+        }
+      } catch {
+        // Non-fatal — we still have the returned project.
+      }
+
+      setSelectedProject(created);
+      setSelectedProjectId(created.projectId);
+      setProjectMode("select");
+      setNewProjectName("");
+      setNewProjectStandardsDoc("");
+    } catch (err) {
+      setProjectError((err as Error).message);
+    } finally {
+      setProjectSaving(false);
+    }
+  }, [newProjectName, newProjectStandardsDoc]);
+
+  const handleCancelNewProject = useCallback(() => {
+    setProjectMode("select");
+    setNewProjectName("");
+    setNewProjectStandardsDoc("");
+    setSelectedProjectId("");
+    setProjectError(null);
+  }, []);
+
+  const handleStartEditProject = useCallback(() => {
+    setEditStandardsDoc(selectedProject?.standardsDoc ?? "");
+    setProjectMode("edit");
+    setProjectError(null);
+  }, [selectedProject]);
+
+  const handleSaveEditProject = useCallback(async () => {
+    if (!selectedProject) return;
+    setProjectSaving(true);
+    setProjectError(null);
+    try {
+      const res = await fetch(
+        `/api/projects/${encodeURIComponent(selectedProject.projectId)}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ standardsDoc: editStandardsDoc }),
+        },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`);
+      if (data.project) setSelectedProject(data.project as Project);
+      setProjectMode("select");
+    } catch (err) {
+      setProjectError((err as Error).message);
+    } finally {
+      setProjectSaving(false);
+    }
+  }, [selectedProject, editStandardsDoc]);
+
+  const handleCancelEditProject = useCallback(() => {
+    setProjectMode("select");
+    setEditStandardsDoc("");
+    setProjectError(null);
+  }, []);
+
+  const handleProjectSelectChange = useCallback((value: string) => {
+    setProjectError(null);
+    if (value === "__new__") {
+      setProjectMode("new");
+      setSelectedProjectId("__new__");
+      return;
+    }
+    setProjectMode("select");
+    setSelectedProjectId(value);
+  }, []);
+
+  // -----------------------------------------------------------------------
   // Reset — return the dashboard to idle so the user can start a new audit
   // -----------------------------------------------------------------------
 
@@ -1144,6 +1318,23 @@ export function useAudit() {
     cachedAudits,
     cacheLoading,
     loadFromCache,
+
+    // Projects
+    projects,
+    selectedProjectId,
+    selectedProject,
+    projectMode,
+    newProjectName, setNewProjectName,
+    newProjectStandardsDoc, setNewProjectStandardsDoc,
+    editStandardsDoc, setEditStandardsDoc,
+    projectError,
+    projectSaving,
+    handleProjectSelectChange,
+    handleCreateProject,
+    handleCancelNewProject,
+    handleStartEditProject,
+    handleSaveEditProject,
+    handleCancelEditProject,
 
     // Export
     handleExportReport,

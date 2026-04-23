@@ -1,12 +1,12 @@
 name: UX audit
 
 # Triggers:
-#   - pull_request        — audit every PR against this repo
-#   - workflow_call       — reusable from consumer repos via
-#                           `uses: NaimGQKC/ux-audit-agent/.github/workflows/ux-audit.yml@main`
+#   - workflow_call — reusable from consumer repos via
+#                     `uses: NaimGQKC/ux-audit-agent/.github/workflows/ux-audit.yml@main`
+# No pull_request trigger: this repo has no preview deployment, so there is
+# no URL to hand to the audit. Consumer repos wire up their own trigger that
+# waits for the preview URL, then calls this workflow.
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
   workflow_call:
     inputs:
       preview_url:

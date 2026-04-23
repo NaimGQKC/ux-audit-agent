@@ -1,15 +1,23 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { setupDesignSystem } from "@/lib/stitch";
 import { fromBrandConfig, DEFAULT_DESIGN_TOKENS } from "@/lib/stitch/design-system-defaults";
+import { requireApiAuth, sanitizeError, logError } from "@/lib/security";
 
-export async function GET() {
-  return NextResponse.json({
-    designSystemId: process.env.STITCH_DESIGN_SYSTEM_ID || null,
-    tokens: DEFAULT_DESIGN_TOKENS,
-  });
+// Fonts are only alphanumeric + spaces + a few safe punctuation chars. This
+// keeps an attacker from injecting CSS or prompt directives via a "fontFamily".
+const SAFE_FONT_FAMILY = /^[a-zA-Z0-9 _,'\-]{1,64}$/;
+
+export async function GET(request: NextRequest) {
+  const denied = requireApiAuth(request);
+  if (denied) return denied;
+  // Do not leak the design-system id on this endpoint.
+  return NextResponse.json({ tokens: DEFAULT_DESIGN_TOKENS });
 }
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
+  const denied = requireApiAuth(request);
+  if (denied) return denied;
+
   try {
     const body = await request.json();
     const { primaryColor, secondaryColor, fontFamily, accentColor, projectId } = body as {
@@ -39,12 +47,22 @@ export async function POST(request: Request) {
       }
     }
 
+    if (!SAFE_FONT_FAMILY.test(fontFamily)) {
+      return NextResponse.json(
+        { error: "Invalid fontFamily: letters, digits, spaces, dashes, commas, quotes only (max 64 chars)." },
+        { status: 400 },
+      );
+    }
+
     const tokens = fromBrandConfig({ primaryColor, secondaryColor, fontFamily, accentColor });
     const designSystem = await setupDesignSystem(projectId, tokens);
 
     return NextResponse.json(designSystem);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown error";
-    return NextResponse.json({ error: message }, { status: 500 });
+    logError("[stitch/design-system]", error);
+    return NextResponse.json(
+      { error: sanitizeError(error, "Failed to set up design system.") },
+      { status: 500 },
+    );
   }
 }

@@ -6,6 +6,9 @@ import { validateAnalysisResult, type UXIssue } from "@/lib/analyzer";
 import { analyzeScreenshotsDir } from "@/lib/analyzer/run";
 import { type ViewportName, VIEWPORTS } from "@/lib/crawler";
 import { saveAuditToCache } from "@/lib/cache";
+import { requireApiAuth, sanitizeError, logError } from "@/lib/security";
+
+const ALLOWED_IMAGE_EXT = new Set(["png", "jpg", "jpeg", "webp"]);
 
 // ---------------------------------------------------------------------------
 // Types (same output format as /api/audit)
@@ -72,6 +75,9 @@ export const maxDuration = 300;
 const VIEWPORT_NAMES: ViewportName[] = Object.keys(VIEWPORTS) as ViewportName[];
 
 export async function POST(request: NextRequest) {
+  const denied = requireApiAuth(request);
+  if (denied) return denied;
+
   let formData: FormData;
   try {
     formData = await request.formData();
@@ -96,6 +102,20 @@ export async function POST(request: NextRequest) {
   for (let i = 0; i < allEntries.length; i++) {
     const entry = allEntries[i];
     if (entry instanceof File && entry.size > 0) {
+      const ext = entry.name.split(".").pop()?.toLowerCase();
+      if (!ext || !ALLOWED_IMAGE_EXT.has(ext)) {
+        return new Response(
+          JSON.stringify({ error: `Unsupported image type: .${ext ?? "(none)"}` }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      // Cap individual images to 15 MB — protects memory + matches frontend limit.
+      if (entry.size > 15 * 1024 * 1024) {
+        return new Response(
+          JSON.stringify({ error: `Image too large: ${(entry.size / 1024 / 1024).toFixed(1)} MB (max 15 MB).` }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
       images.push(entry);
       labels.push((allLabels[i] as string) || `Page ${i + 1}`);
     }
@@ -134,7 +154,8 @@ export async function POST(request: NextRequest) {
       try {
         await runScreenshotAudit(images, labels, sse, prdContext || undefined, repoContext || undefined);
       } catch (err) {
-        sse.sendError((err as Error).message);
+        logError("[audit-screenshots]", err);
+        sse.sendError(sanitizeError(err, "Screenshot audit failed."));
       } finally {
         clearInterval(heartbeat);
         sse.close();

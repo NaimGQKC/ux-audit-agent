@@ -2,6 +2,12 @@ import { NextRequest } from "next/server";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { requireApiAuth } from "@/lib/security";
+
+// Session / cache IDs and filenames that we trust enough to read from disk.
+// Anything containing path separators, traversal, or control chars is rejected.
+const SAFE_ID = /^[a-zA-Z0-9_-]{1,128}$/;
+const SAFE_FILENAME = /^[a-zA-Z0-9._-]{1,255}$/;
 
 /**
  * POST /api/export-report
@@ -60,14 +66,20 @@ function tryReadImageAsBase64(screenshotUrl: string): string {
     const sessionId = parsed.searchParams.get("s");
     const cacheId = parsed.searchParams.get("c");
     const filename = parsed.searchParams.get("f");
-    if (!filename) return "";
+    if (!filename || !SAFE_FILENAME.test(filename)) return "";
 
     let filepath = "";
-    if (cacheId) {
-      filepath = path.join(process.cwd(), ".ux-audit-cache", cacheId, "screenshots", filename);
-    } else if (sessionId) {
-      filepath = path.join(os.tmpdir(), sessionId, filename);
+    let rootDir = "";
+    if (cacheId && SAFE_ID.test(cacheId)) {
+      rootDir = path.resolve(path.join(process.cwd(), ".ux-audit-cache", cacheId, "screenshots"));
+      filepath = path.join(rootDir, filename);
+    } else if (sessionId && SAFE_ID.test(sessionId)) {
+      rootDir = path.resolve(path.join(os.tmpdir(), sessionId));
+      filepath = path.join(rootDir, filename);
     }
+
+    // Defense in depth: ensure the resolved path never escapes its root dir.
+    if (filepath && !path.resolve(filepath).startsWith(rootDir + path.sep)) return "";
 
     if (filepath && fs.existsSync(filepath)) {
       const buffer = fs.readFileSync(filepath);
@@ -88,6 +100,9 @@ function tryReadImageAsBase64(screenshotUrl: string): string {
 }
 
 export async function POST(request: NextRequest) {
+  const denied = requireApiAuth(request);
+  if (denied) return denied;
+
   let body: ExportRequest;
   try {
     body = (await request.json()) as ExportRequest;
@@ -211,8 +226,8 @@ export async function POST(request: NextRequest) {
   });
 }
 
-function escapeHtml(str: string): string {
-  return str
+function escapeHtml(str: unknown): string {
+  return String(str ?? "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")

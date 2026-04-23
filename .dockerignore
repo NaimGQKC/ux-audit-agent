@@ -1,0 +1,24 @@
+.git
+.github
+.next
+node_modules
+.ux-audit-cache
+.ux-audit-agent
+screenshots
+qa-smoke-report.html
+evals/runs
+*.log
+.env
+.env.local
+.env.*.local
+.DS_Store
+docs
+skills
+.claude
+.agents
+
+# Local dev artifacts we don't want in the remote image
+CLAUDE.md
+QA-*.md
+README.md
+tsconfig.tsbuildinfo

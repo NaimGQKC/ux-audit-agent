@@ -14,6 +14,18 @@ import crypto from "node:crypto";
 // ---------------------------------------------------------------------------
 
 const CACHE_DIR = path.join(process.cwd(), ".ux-audit-cache");
+const CACHE_ROOT = path.resolve(CACHE_DIR);
+
+// auditId() emits slug_hex8 — validate any caller-supplied id against this
+// shape before using it as a directory name. Blocks traversal and weird
+// filenames that would otherwise resolve outside CACHE_DIR.
+const CACHE_ID_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/;
+
+function isSafeCacheId(id: string): boolean {
+  if (!CACHE_ID_PATTERN.test(id)) return false;
+  const resolved = path.resolve(path.join(CACHE_DIR, id));
+  return resolved === path.join(CACHE_ROOT, id) && resolved.startsWith(CACHE_ROOT + path.sep);
+}
 
 export interface CachedAuditMeta {
   id: string;
@@ -171,6 +183,7 @@ export function findCachedAudits(url?: string): CachedAuditMeta[] {
  * Rewrites filesystem screenshot paths to cache-aware API URLs so the UI can serve them.
  */
 export function loadCachedAudit(id: string): CachedAuditResult | null {
+  if (!isSafeCacheId(id)) return null;
   const resultPath = path.join(CACHE_DIR, id, "result.json");
   const metaPath = path.join(CACHE_DIR, id, "meta.json");
 
@@ -208,6 +221,7 @@ export function loadCachedAudit(id: string): CachedAuditResult | null {
  * Delete a cached audit entry.
  */
 export function deleteCachedAudit(id: string): boolean {
+  if (!isSafeCacheId(id)) return false;
   const entryDir = path.join(CACHE_DIR, id);
   if (!fs.existsSync(entryDir)) return false;
 

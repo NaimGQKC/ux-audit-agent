@@ -8,7 +8,10 @@
     "start": "next start",
     "lint": "next lint",
     "smoke": "tsx lib/smoke-test.ts",
-    "mcp": "tsx src/mcp/server.ts",
+    "mcp": "tsx src/mcp/server-stdio.ts",
+    "mcp:stdio": "tsx src/mcp/server-stdio.ts",
+    "mcp:http": "tsx src/mcp/server-http.ts",
+    "typecheck": "tsc --noEmit",
     "audit": "tsx src/cli/audit.ts",
     "audit:comment": "tsx src/cli/comment.ts",
     "evals": "tsx evals/runner.ts"

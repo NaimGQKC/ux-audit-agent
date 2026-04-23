@@ -17,11 +17,19 @@ import {
 } from "@/lib/crawler";
 import { validateAnalysisResult, type UXIssue } from "@/lib/analyzer";
 import { analyzeScreenshots } from "@/lib/analyzer/run";
-import { checkClaudeHealth } from "@/lib/claude";
+import { checkClaudeClientHealth } from "@/lib/claude-client";
 import { saveAuditToCache } from "@/lib/cache";
 import { runLighthouse, type LighthouseFinding } from "@/lib/deterministic/lighthouse";
 import { mergeFindings } from "@/lib/deterministic/merge";
 import { saveRun, summarize, isValidRunId } from "@/lib/persistence/runs";
+import { resolveProjectPrdContext } from "@/lib/persistence/projects";
+import {
+  requireApiAuth,
+  sanitizeError,
+  logError,
+  validatePublicUrl,
+  validateLocalUrl,
+} from "@/lib/security";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -46,6 +54,22 @@ interface AuditRequestBody {
   captureInteractions?: boolean;
   /** Optional CSS selectors the crawler clicks on the target page. */
   clickSelectors?: string[];
+  /**
+   * Reuse the persisted browser profile from a previous interactive login
+   * instead of starting from a clean slate. Default: false (fresh every run).
+   *
+   * Fresh-by-default fixes the "second run doesn't work" SSO bug — stale
+   * cookies in the reused profile would silently land us on a partial auth
+   * state whose cookies weren't usable. Users who genuinely want session
+   * reuse across runs can opt in with this flag.
+   */
+  reuseSession?: boolean;
+  /**
+   * Optional persisted project id. When provided, the project's
+   * `standardsDoc` is loaded server-side and prepended to `prdContext`
+   * before being forwarded into the analyzer's existing prdContext slot.
+   */
+  projectId?: string;
 }
 
 interface ViewportAnalysis {
@@ -120,31 +144,20 @@ function createSSEWriter(controller: ReadableStreamDefaultController<Uint8Array>
 // Validation
 // ---------------------------------------------------------------------------
 
-function isValidUrl(input: string): boolean {
-  try {
-    const url = new URL(input);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
-    // Block private/internal IPs to prevent SSRF — skipped in development so devs
-    // can audit their own localhost apps.
-    if (process.env.NODE_ENV !== "development") {
-      const hostname = url.hostname.toLowerCase();
-      if (
-        hostname === "localhost" ||
-        hostname === "[::1]" ||
-        hostname.startsWith("127.") ||
-        hostname.startsWith("10.") ||
-        hostname.startsWith("192.168.") ||
-        /^172\.(1[6-9]|2\d|3[01])\./.test(hostname) ||
-        hostname.startsWith("169.254.") ||
-        hostname.endsWith(".local")
-      ) {
-        return false;
-      }
-    }
-    return true;
-  } catch {
-    return false;
+/**
+ * Validate an input URL against our SSRF rules. Returns the canonicalised URL
+ * on success. In development we additionally allow loopback targets so devs
+ * can audit their own `npm run dev`. Everywhere else (including staging/prod)
+ * only public hosts are accepted.
+ */
+function validateAuditUrl(input: string): { ok: true; url: string } | { ok: false; error: string } {
+  const publicCheck = validatePublicUrl(input);
+  if (publicCheck.ok) return { ok: true, url: publicCheck.url! };
+  if (process.env.NODE_ENV !== "production") {
+    const localCheck = validateLocalUrl(input);
+    if (localCheck.ok) return { ok: true, url: localCheck.url! };
   }
+  return { ok: false, error: publicCheck.error ?? "Invalid URL" };
 }
 
 /** Build a safe screenshot URL from session ID + filename. */
@@ -161,6 +174,9 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 900; // Allow up to 15 minutes for large sites
 
 export async function POST(request: NextRequest) {
+  const denied = requireApiAuth(request);
+  if (denied) return denied;
+
   let body: AuditRequestBody;
   try {
     body = (await request.json()) as AuditRequestBody;
@@ -178,12 +194,34 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  if (!isValidUrl(body.url)) {
-    return new Response(JSON.stringify({ error: "Invalid URL. Must be an http or https URL." }), {
+  const validation = validateAuditUrl(body.url);
+  if (!validation.ok) {
+    return new Response(JSON.stringify({ error: validation.error }), {
       status: 400,
       headers: { "Content-Type": "application/json" },
     });
   }
+  body.url = validation.url;
+
+  // --- Optional project merge --------------------------------------------
+  // If a projectId is supplied, load the persisted project and prepend its
+  // standardsDoc to any per-run prdContext. Project standards come FIRST so
+  // the stable portion benefits from Anthropic prompt cache hits; per-run
+  // context varies and sits at the end of the merged block. Validation is
+  // strict: invalid-format ids never touch the filesystem, unknown ids
+  // return 400 without leaking server paths.
+  //
+  // The merge is shared with the MCP tool layer via resolveProjectPrdContext
+  // so cache keys stay byte-identical across transports.
+  const resolved = await resolveProjectPrdContext(body.projectId, body.prdContext);
+  if (!resolved.ok) {
+    const errMsg = resolved.reason === "invalid_id" ? "Invalid projectId" : "Unknown projectId";
+    return new Response(JSON.stringify({ error: errMsg }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  const effectivePrdContext = resolved.prdContext;
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -200,9 +238,10 @@ export async function POST(request: NextRequest) {
       }, 15_000);
 
       try {
-        await runAudit(body.url, sse, body.prdContext, body.repoContext, body.cookies, body.usePersistedSession, body.interactiveLogin, body.credentials, body.skipDeterministic, body.useRealChrome, body.realChromeHeadless, body.captureInteractions, body.clickSelectors);
+        await runAudit(body.url, sse, effectivePrdContext, body.repoContext, body.cookies, body.usePersistedSession, body.interactiveLogin, body.credentials, body.skipDeterministic, body.useRealChrome, body.realChromeHeadless, body.captureInteractions, body.clickSelectors, body.reuseSession);
       } catch (err) {
-        sse.sendError((err as Error).message);
+        logError("[audit]", err);
+        sse.sendError(sanitizeError(err, "Audit failed."));
       } finally {
         clearInterval(heartbeat);
         sse.close();
@@ -240,18 +279,23 @@ async function runAudit(
   realChromeHeadless?: boolean,
   captureInteractions?: boolean,
   clickSelectors?: string[],
+  reuseSession?: boolean,
 ): Promise<void> {
+  // Fresh profile by default — only reuse if explicitly asked. Prevents stale
+  // SSO state from the previous run from silently breaking this one.
+  const freshProfile = !reuseSession;
+
   // --- Interactive login: open headed browser, wait for user ---------------
   if (interactiveLogin) {
     sse.sendProgress(
       useRealChrome
         ? `Launching your Google Chrome (${realChromeHeadless ? "headless" : "headed"}) for interactive login...`
-        : "Launching browser for interactive login...",
+        : `Launching browser for interactive login${freshProfile ? " (fresh profile)" : " (reusing session)"}...`,
     );
 
     const { sessionId: loginSessionId } = useRealChrome
       ? await launchRealChromeSession(url, { headless: !!realChromeHeadless })
-      : await launchHeadedPersistentBrowser(url);
+      : await launchHeadedPersistentBrowser(url, { freshProfile });
 
     // Tell the frontend the browser is open — it shows "I'm logged in" button
     sse.sendInteractiveLoginReady(loginSessionId);
@@ -260,17 +304,23 @@ async function runAudit(
     await waitForReadySignal(loginSessionId);
 
     sse.sendProgress("Login confirmed — extracting session...");
-    const loginCookies = await extractCookiesAndClose(loginSessionId);
+    // When freshProfile is true, also wipe the profile afterwards so the next
+    // run is equally clean. When the user opted into reuse, keep the profile.
+    const loginCookies = await extractCookiesAndClose(loginSessionId, {
+      wipeProfileAfter: freshProfile,
+    });
     cookies = loginCookies;
   }
 
-  // --- Pre-flight: verify Claude CLI is available ---------------------------
-  sse.sendProgress("Checking Claude CLI availability...");
-  const health = await checkClaudeHealth();
+  // --- Pre-flight: verify Claude transport is available --------------------
+  sse.sendProgress("Checking Claude availability...");
+  const health = await checkClaudeClientHealth();
   if (!health.ok) {
     throw new Error(
-      `Claude CLI is not responding: ${health.error}. ` +
-      `Make sure the 'claude' command is in your PATH and your session is active.`
+      `Claude (${health.transport}) is not responding: ${health.error}. ` +
+      (health.transport === "sdk"
+        ? "Check ANTHROPIC_API_KEY."
+        : "Make sure the 'claude' command is in your PATH and your session is active."),
     );
   }
 
@@ -296,7 +346,7 @@ async function runAudit(
     sse.sendProgress("SSO redirect detected — launching browser for login...");
 
     const { sessionId: ssoSessionId } =
-      await launchHeadedPersistentBrowser(url);
+      await launchHeadedPersistentBrowser(url, { freshProfile });
 
     sse.sendSSORedirect(ssoSessionId, outcome.redirectUrl);
 
@@ -320,12 +370,14 @@ async function runAudit(
 
     if (!ssoResolved) {
       sse.sendError("SSO login timed out. Please try again.");
-      try { await extractCookiesAndClose(ssoSessionId); } catch { /* ignore */ }
+      try { await extractCookiesAndClose(ssoSessionId, { wipeProfileAfter: freshProfile }); } catch { /* ignore */ }
       return;
     }
 
     sse.sendProgress("SSO login complete — extracting session...");
-    const ssoCookies = await extractCookiesAndClose(ssoSessionId);
+    const ssoCookies = await extractCookiesAndClose(ssoSessionId, {
+      wipeProfileAfter: freshProfile,
+    });
 
     // Re-crawl with the authenticated cookies + persisted profile
     sse.sendProgress("Resuming crawl with authenticated session...");

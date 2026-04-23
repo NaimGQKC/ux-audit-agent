@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import mammoth from "mammoth";
+import { requireApiAuth, sanitizeError, logError } from "@/lib/security";
+
+const ALLOWED_EXT = new Set(["pdf", "docx", "txt", "md"]);
 
 export async function POST(req: NextRequest) {
+  const denied = requireApiAuth(req);
+  if (denied) return denied;
+
   try {
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
@@ -20,6 +26,12 @@ export async function POST(req: NextRequest) {
     }
 
     const ext = file.name.split(".").pop()?.toLowerCase();
+    if (!ext || !ALLOWED_EXT.has(ext)) {
+      return NextResponse.json(
+        { error: `Unsupported file type: .${ext ?? "(none)"}` },
+        { status: 400 }
+      );
+    }
     const buffer = Buffer.from(await file.arrayBuffer());
     let text = "";
 
@@ -56,9 +68,9 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ text });
   } catch (err) {
-    console.error("Document parse error:", err);
+    logError("[parse-document]", err);
     return NextResponse.json(
-      { error: (err as Error).message || "Failed to parse document" },
+      { error: sanitizeError(err, "Failed to parse document.") },
       { status: 500 }
     );
   }

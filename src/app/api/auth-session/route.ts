@@ -7,12 +7,24 @@ import {
   clearBrowserProfile,
   hasPersistedSession,
 } from "@/lib/crawler";
+import {
+  requireApiAuth,
+  sanitizeError,
+  logError,
+  validatePublicUrl,
+  validateLocalUrl,
+} from "@/lib/security";
+
+// Session IDs are UUIDs we generate. Reject anything else before using them.
+const SESSION_ID_PATTERN = /^[a-zA-Z0-9_-]{8,128}$/;
 
 // ---------------------------------------------------------------------------
 // GET /api/auth-session  — check if a persisted session exists on disk
 // ---------------------------------------------------------------------------
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const denied = requireApiAuth(request);
+  if (denied) return denied;
   return NextResponse.json({ hasSession: hasPersistedSession() });
 }
 
@@ -27,6 +39,9 @@ export async function GET() {
 // ---------------------------------------------------------------------------
 
 export async function POST(request: NextRequest) {
+  const denied = requireApiAuth(request);
+  if (denied) return denied;
+
   let body: {
     action: string;
     url?: string;
@@ -50,22 +65,25 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Missing url" }, { status: 400 });
     }
 
-    // Validate URL is http(s) — prevent launching browser to arbitrary protocols
-    try {
-      const parsed = new URL(url);
-      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-        return NextResponse.json({ error: "URL must use http or https protocol" }, { status: 400 });
-      }
-    } catch {
-      return NextResponse.json({ error: "Invalid URL" }, { status: 400 });
+    // Validate URL: block SSRF targets in production; permit loopback in dev so
+    // a developer can auth-session their own `npm run dev`.
+    let validation = validatePublicUrl(url);
+    if (!validation.ok && process.env.NODE_ENV !== "production") {
+      // Dev-only fallback: allow loopback dev servers.
+      const localCheck = validateLocalUrl(url);
+      if (localCheck.ok) validation = localCheck;
+    }
+    if (!validation.ok) {
+      return NextResponse.json({ error: validation.error }, { status: 400 });
     }
 
     try {
-      const { sessionId } = await launchHeadedPersistentBrowser(url);
+      const { sessionId } = await launchHeadedPersistentBrowser(validation.url!);
       return NextResponse.json({ sessionId });
     } catch (err) {
+      logError("[auth-session/start]", err);
       return NextResponse.json(
-        { error: `Failed to launch browser: ${(err as Error).message}` },
+        { error: sanitizeError(err, "Failed to launch browser.") },
         { status: 500 }
       );
     }
@@ -76,16 +94,17 @@ export async function POST(request: NextRequest) {
   // -----------------------------------------------------------------------
   if (action === "check-sso") {
     const { sessionId } = body;
-    if (!sessionId) {
-      return NextResponse.json({ error: "Missing sessionId" }, { status: 400 });
+    if (!sessionId || !SESSION_ID_PATTERN.test(sessionId)) {
+      return NextResponse.json({ error: "Missing or invalid sessionId" }, { status: 400 });
     }
 
     try {
       const result = await checkSSOReturn(sessionId);
       return NextResponse.json(result);
     } catch (err) {
+      logError("[auth-session/check-sso]", err);
       return NextResponse.json(
-        { error: (err as Error).message },
+        { error: sanitizeError(err, "Session not found.") },
         { status: 404 }
       );
     }
@@ -96,16 +115,17 @@ export async function POST(request: NextRequest) {
   // -----------------------------------------------------------------------
   if (action === "complete") {
     const { sessionId } = body;
-    if (!sessionId) {
-      return NextResponse.json({ error: "Missing sessionId" }, { status: 400 });
+    if (!sessionId || !SESSION_ID_PATTERN.test(sessionId)) {
+      return NextResponse.json({ error: "Missing or invalid sessionId" }, { status: 400 });
     }
 
     try {
       const cookies = await extractCookiesAndClose(sessionId);
       return NextResponse.json({ cookies, cookieCount: cookies.length });
     } catch (err) {
+      logError("[auth-session/complete]", err);
       return NextResponse.json(
-        { error: (err as Error).message },
+        { error: sanitizeError(err, "Session not found.") },
         { status: 404 }
       );
     }
@@ -116,8 +136,8 @@ export async function POST(request: NextRequest) {
   // -----------------------------------------------------------------------
   if (action === "proceed") {
     const { sessionId } = body;
-    if (!sessionId) {
-      return NextResponse.json({ error: "Missing sessionId" }, { status: 400 });
+    if (!sessionId || !SESSION_ID_PATTERN.test(sessionId)) {
+      return NextResponse.json({ error: "Missing or invalid sessionId" }, { status: 400 });
     }
 
     setReadySignal(sessionId);

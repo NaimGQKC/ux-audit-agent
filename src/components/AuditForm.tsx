@@ -30,8 +30,23 @@ import {
   KeyRound,
   MousePointerClick,
   SlidersHorizontal,
+  FolderKanban,
+  Pencil,
 } from "lucide-react";
 import type { AuditPhase, UploadedScreenshot } from "@/types/audit";
+
+// Project types — mirrors src/lib/persistence/projects.ts but inlined to
+// keep this component decoupled from server modules.
+type ProjectListEntry = { projectId: string; name: string; updatedAt: string };
+type Project = {
+  projectId: string;
+  name: string;
+  standardsDoc?: string;
+  brandTokens?: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -98,6 +113,22 @@ export function AuditForm({
   brandConfig, setBrandConfig,
   brandSaved,
   onSaveBrand,
+  // Projects (saved per-project design standards)
+  projects,
+  selectedProjectId,
+  selectedProject,
+  projectMode,
+  newProjectName, setNewProjectName,
+  newProjectStandardsDoc, setNewProjectStandardsDoc,
+  editStandardsDoc, setEditStandardsDoc,
+  projectError,
+  projectSaving,
+  onProjectSelectChange,
+  onCreateProject,
+  onCancelNewProject,
+  onStartEditProject,
+  onSaveEditProject,
+  onCancelEditProject,
 }: {
   url: string;
   setUrl: (v: string) => void;
@@ -157,6 +188,24 @@ export function AuditForm({
   setBrandConfig: React.Dispatch<React.SetStateAction<{ primaryColor: string; secondaryColor: string; fontFamily: string; accentColor: string }>>;
   brandSaved: boolean;
   onSaveBrand: () => void;
+  projects: ProjectListEntry[];
+  selectedProjectId: string;
+  selectedProject: Project | null;
+  projectMode: "select" | "new" | "edit";
+  newProjectName: string;
+  setNewProjectName: (v: string) => void;
+  newProjectStandardsDoc: string;
+  setNewProjectStandardsDoc: (v: string) => void;
+  editStandardsDoc: string;
+  setEditStandardsDoc: (v: string) => void;
+  projectError: string | null;
+  projectSaving: boolean;
+  onProjectSelectChange: (value: string) => void;
+  onCreateProject: () => void;
+  onCancelNewProject: () => void;
+  onStartEditProject: () => void;
+  onSaveEditProject: () => void;
+  onCancelEditProject: () => void;
 }) {
   // Local UI toggles
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -191,6 +240,14 @@ export function AuditForm({
   const urlId = `${ids}-audit-url`;
   const emailId = `${ids}-auto-login-email`;
   const passwordId = `${ids}-auto-login-password`;
+  const projectSelectId = `${ids}-project-select`;
+  const projectNewNameId = `${ids}-project-new-name`;
+  const projectNewStandardsId = `${ids}-project-new-standards`;
+  const projectEditStandardsId = `${ids}-project-edit-standards`;
+  const projectStandardsPreviewId = `${ids}-project-standards-preview`;
+
+  const hasSelectedProject =
+    projectMode === "select" && !!selectedProject && selectedProjectId !== "" && selectedProjectId !== "__new__";
 
   return (
     <>
@@ -251,6 +308,221 @@ export function AuditForm({
           Run Audit
         </Button>
       </div>
+
+      {/* Project picker — saved per-project standards auto-attach to the
+          audit via the `projectId` field on /api/audit. The picker sits
+          outside the Advanced collapsible because it's first-class context. */}
+      <section
+        aria-label="Project"
+        className="border border-border rounded-lg p-4 space-y-3 bg-muted/20"
+      >
+        <div className="flex items-center gap-2 text-sm font-medium">
+          <FolderKanban className="w-4 h-4 text-muted-foreground" aria-hidden="true" />
+          <span>Project</span>
+        </div>
+
+        {projectMode === "select" && (
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <label
+                htmlFor={projectSelectId}
+                className="text-xs font-medium text-muted-foreground uppercase tracking-wide"
+              >
+                Saved project (auto-attaches its standards to this audit)
+              </label>
+              <select
+                id={projectSelectId}
+                value={selectedProjectId}
+                onChange={(e) => onProjectSelectChange(e.target.value)}
+                className="w-full h-9 rounded border border-border bg-background px-2 text-sm"
+              >
+                <option value="">— No project —</option>
+                {projects.map((p) => (
+                  <option key={p.projectId} value={p.projectId}>
+                    {p.name}
+                  </option>
+                ))}
+                <option value="__new__">+ New project…</option>
+              </select>
+            </div>
+
+            {projectError && (
+              <p className="text-xs text-red-600 flex items-center gap-1" role="alert">
+                <AlertTriangle className="w-3 h-3" aria-hidden="true" />
+                {projectError}
+              </p>
+            )}
+
+            {hasSelectedProject && selectedProject?.standardsDoc && (
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label
+                    htmlFor={projectStandardsPreviewId}
+                    className="text-xs font-medium text-muted-foreground uppercase tracking-wide"
+                  >
+                    Project standards (auto-attached to audit)
+                  </label>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={onStartEditProject}
+                    className="h-7 px-2 text-xs"
+                  >
+                    <Pencil className="w-3 h-3 mr-1" />
+                    Edit
+                  </Button>
+                </div>
+                <Textarea
+                  id={projectStandardsPreviewId}
+                  readOnly
+                  disabled
+                  value={selectedProject.standardsDoc}
+                  className="min-h-[100px] text-sm font-mono bg-muted/40 cursor-default"
+                />
+              </div>
+            )}
+
+            {hasSelectedProject && !selectedProject?.standardsDoc && (
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
+                <span>No standards saved yet for this project.</span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={onStartEditProject}
+                  className="h-7 px-2 text-xs"
+                >
+                  <Pencil className="w-3 h-3 mr-1" />
+                  Add standards
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {projectMode === "new" && (
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <label
+                htmlFor={projectNewNameId}
+                className="text-xs font-medium text-muted-foreground uppercase tracking-wide"
+              >
+                Project name
+              </label>
+              <Input
+                id={projectNewNameId}
+                type="text"
+                value={newProjectName}
+                onChange={(e) => setNewProjectName(e.target.value)}
+                placeholder="Acme web app"
+                className="h-9 text-sm"
+              />
+            </div>
+            <div className="space-y-1">
+              <label
+                htmlFor={projectNewStandardsId}
+                className="text-xs font-medium text-muted-foreground uppercase tracking-wide"
+              >
+                Design standards / conventions (markdown)
+              </label>
+              <Textarea
+                id={projectNewStandardsId}
+                value={newProjectStandardsDoc}
+                onChange={(e) => setNewProjectStandardsDoc(e.target.value)}
+                placeholder="# Design system&#10;## Colors&#10;- Primary: #..."
+                className="min-h-[120px] text-sm font-mono"
+              />
+            </div>
+            {projectError && (
+              <p className="text-xs text-red-600 flex items-center gap-1" role="alert">
+                <AlertTriangle className="w-3 h-3" aria-hidden="true" />
+                {projectError}
+              </p>
+            )}
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                onClick={onCreateProject}
+                disabled={projectSaving || !newProjectName.trim()}
+                className="h-8"
+              >
+                {projectSaving ? (
+                  <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />
+                )}
+                Create project
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={onCancelNewProject}
+                disabled={projectSaving}
+                className="h-8"
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {projectMode === "edit" && (
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <label
+                htmlFor={projectEditStandardsId}
+                className="text-xs font-medium text-muted-foreground uppercase tracking-wide"
+              >
+                Design standards for{" "}
+                <span className="font-semibold text-foreground">
+                  {selectedProject?.name ?? "project"}
+                </span>
+              </label>
+              <Textarea
+                id={projectEditStandardsId}
+                value={editStandardsDoc}
+                onChange={(e) => setEditStandardsDoc(e.target.value)}
+                className="min-h-[140px] text-sm font-mono"
+              />
+            </div>
+            {projectError && (
+              <p className="text-xs text-red-600 flex items-center gap-1" role="alert">
+                <AlertTriangle className="w-3 h-3" aria-hidden="true" />
+                {projectError}
+              </p>
+            )}
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                onClick={onSaveEditProject}
+                disabled={projectSaving}
+                className="h-8"
+              >
+                {projectSaving ? (
+                  <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />
+                )}
+                Save
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={onCancelEditProject}
+                disabled={projectSaving}
+                className="h-8"
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+      </section>
 
       {/* Advanced options — single master toggle so the idle screen stays
           focused on the URL input. All config panels nest inside. */}
@@ -416,11 +688,13 @@ export function AuditForm({
         open={prdOpen}
         onToggle={() => setPrdOpen(!prdOpen)}
         icon={<FileText className="w-4 h-4" />}
-        title="Project Context (PRD)"
+        title={hasSelectedProject ? "Additional per-run context (optional)" : "Project Context (PRD)"}
         badge={prdText ? (prdFileName ?? "pasted") : undefined}
       >
         <p className="text-xs text-muted-foreground pt-3">
-          Upload or paste your PRD to give the analysis additional context about product goals, user flows, and requirements.
+          {hasSelectedProject
+            ? "Project standards are already attached. Add any run-specific context here — it is merged after the project standards."
+            : "Upload or paste your PRD to give the analysis additional context about product goals, user flows, and requirements."}
         </p>
         <div
           onDragOver={(e) => e.preventDefault()}

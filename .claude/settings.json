@@ -1,0 +1,12 @@
+{
+    "mcpServers": {
+        "ux-audit": {
+            "command": "npx",
+            "args": [
+                "tsx",
+                "src/mcp/server-stdio.ts"
+            ],
+            "cwd": "C:/Users/Naim/projects/ux-audit-agent"
+        }
+    }
+}
