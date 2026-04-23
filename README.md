@@ -46,9 +46,17 @@ URL Input
 ### Installation
 
 ```bash
+git clone https://github.com/NaimGQKC/ux-audit-agent.git
+cd ux-audit-agent
 npm install
 npx playwright install chromium
 ```
+
+### Wire up the MCP in Claude Code
+
+The project-scoped `.claude/settings.json` registers the local stdio MCP server (`ux-audit`) automatically — no per-machine config needed. **Always launch `claude` from the repo root** so the MCP inherits the right cwd (the config uses a relative script path on purpose). Then in a fresh Claude Code session, type `@` — you should see the `ux-audit` toolset: `audit_page`, `audit_site`, `quick_scan`, `audit_local`, `audit_screenshot`, `auth_session`, `clear_auth_session`, `list_projects`, `create_project`, `update_project`. If nothing shows up, restart Claude Code and run `claude mcp list` to verify it picked up.
+
+Analyzer calls use your existing Claude subscription via the CLI — no Anthropic API key required.
 
 ### Environment Variables
 
